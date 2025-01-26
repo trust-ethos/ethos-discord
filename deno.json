@@ -1,8 +1,15 @@
 {
   "tasks": {
-    "start": "deno run --allow-net --allow-env mod.ts"
+    "start": "deno run --allow-net --allow-env mod.ts",
+    "dev": "deno run --watch --allow-net --allow-env mod.ts",
+    "register": "deno run --allow-net --allow-env register.ts",
+    "test": "deno run --allow-net --allow-env test.ts"
   },
   "imports": {
-    "harmony": "https://deno.land/x/harmony/mod.ts"
+    "std/": "https://deno.land/std@0.208.0/"
+  },
+  "compilerOptions": {
+    "allowJs": true,
+    "lib": ["deno.window"]
   }
 } 

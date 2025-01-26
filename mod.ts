@@ -1,70 +1,345 @@
 import {
-  Client,
-  Embed,
-  slash,
-  SlashCommandContext,
-  SlashCommandPartial
+  serve,
+  crypto,
+  type APIInteraction,
+  type APIInteractionResponse,
+  InteractionType,
+  InteractionResponseType,
+  ApplicationCommandType
 } from "./deps.ts";
 
 // Load environment variables
-const DISCORD_TOKEN = Deno.env.get("DISCORD_TOKEN");
+const PUBLIC_KEY = Deno.env.get("DISCORD_PUBLIC_KEY");
+const APPLICATION_ID = Deno.env.get("DISCORD_APPLICATION_ID");
 
-if (!DISCORD_TOKEN) {
-  console.error("Missing DISCORD_TOKEN environment variable");
+if (!PUBLIC_KEY || !APPLICATION_ID) {
+  console.error("Missing required environment variables");
   Deno.exit(1);
 }
 
-const client = new Client();
-
-// Register slash command
-client.slash.commands.set("ethos", {
-  name: "ethos",
-  description: "Look up Ethos profile for a Twitter user",
-  options: [{
-    name: "twitter_handle",
-    description: "Twitter handle to look up (with or without @)",
-    type: 3, // STRING type
-    required: true
-  }]
-} as SlashCommandPartial);
-
-// Handle the ethos command
-client.on("slashCommand", async (interaction: SlashCommandContext) => {
-  if (interaction.name !== "ethos") return;
-
-  const twitterHandle = (interaction.options[0].value as string).replace("@", "");
-
-  await interaction.defer();
-
+// Function to fetch Ethos profile
+async function fetchEthosProfile(handle: string) {
   try {
-    const response = await fetch(`https://ethos.com/api/v1/profiles/${twitterHandle}`);
-
-    if (response.ok) {
-      const data = await response.json();
-      
-      const embed = new Embed()
-        .setTitle(`Ethos Profile for @${twitterHandle}`)
-        .setColor(0x0099ff)
-        .addField("Ethos Score", String(data.score ?? "N/A"));
-      
-      await interaction.reply({ embeds: [embed] });
-    } else {
-      await interaction.reply({
-        content: `Error: Could not fetch Ethos profile for @${twitterHandle}`,
-        ephemeral: true
-      });
+    // Format handle for x.com service
+    const formattedHandle = handle.replace('@', '');
+    
+    // First fetch Twitter ID
+    const twitterResponse = await fetch(`https://api.ethos.network/api/twitter/user/?username=${formattedHandle}`);
+    if (!twitterResponse.ok) {
+      if (twitterResponse.status === 404) {
+        return { error: `Twitter handle @${formattedHandle} not found` };
+      }
+      return { error: "Failed to fetch Twitter info. Please try again later." };
     }
+
+    const twitterData = await twitterResponse.json();
+    console.log("Twitter API Response:", JSON.stringify(twitterData, null, 2));
+
+    if (!twitterData.ok || !twitterData.data?.id) {
+      return { error: "Could not find Twitter ID for this handle" };
+    }
+
+    const twitterId = twitterData.data.id;
+    const target = `service:x.com:${twitterId}`;
+    
+    // Fetch profile, review stats, and vouch stats
+    const [profileResponse, reviewStatsResponse, vouchStatsResponse, topReviewResponse] = await Promise.all([
+      fetch(`https://api.ethos.network/api/v1/score/${target}`),
+      fetch(`https://api.ethos.network/api/v1/reviews/stats`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ target })
+      }),
+      fetch(`https://api.ethos.network/api/v1/vouches/stats`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ target })
+      }),
+      fetch(`https://api.ethos.network/api/v1/activities/unified`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          target,
+          direction: "subject",
+          orderBy: {
+            field: "votes",
+            direction: "desc"
+          },
+          filter: ["review"],
+          excludeHistorical: true,
+          pagination: {
+            offsets: {},
+            limit: 1
+          }
+        })
+      })
+    ]);
+    
+    if (!profileResponse.ok) {
+      if (profileResponse.status === 404) {
+        return { error: `No Ethos profile found for @${formattedHandle}. They can create one at https://ethos.network` };
+      }
+      return { error: "Failed to fetch profile. Please try again later." };
+    }
+
+    const profileData = await profileResponse.json();
+    console.log("Profile API Response:", JSON.stringify(profileData, null, 2));
+
+    if (!profileData.ok || !profileData.data) {
+      return { error: "This profile hasn't been indexed by Ethos yet. Please try again later." };
+    }
+
+    const reviewStats = await reviewStatsResponse.json();
+    console.log("Review Stats API Response:", JSON.stringify(reviewStats, null, 2));
+    console.log("Review Stats target:", target);
+    
+    const vouchStats = await vouchStatsResponse.json();
+    console.log("Vouch Stats API Response:", JSON.stringify(vouchStats, null, 2));
+    
+    const topReviewResponseData = await topReviewResponse.json();
+    console.log("Top Review Response:", JSON.stringify(topReviewResponseData, null, 2));
+    
+    const topReviewData = topReviewResponseData.ok && topReviewResponseData.data?.values?.[0]?.data;
+
+    const totalReviews = reviewStats.ok ? reviewStats.data?.total?.received || 0 : 0;
+    const positivePercentage = reviewStats.ok ? reviewStats.data?.total?.positiveReviewPercentage || 0 : 0;
+    
+    const vouchCount = vouchStats.ok ? vouchStats.data?.count?.received || 0 : 0;
+    const vouchBalance = vouchStats.ok ? Number(vouchStats.data?.balance?.received || 0).toFixed(2) : "0.00";
+
+    const scoreData = profileData.data;
+    const elements = scoreData.elements || {};
+
+    return {
+      score: scoreData.score,
+      handle: formattedHandle,
+      twitterId,
+      avatar: twitterData.data.avatar,
+      name: twitterData.data.name,
+      elements: {
+        accountAge: elements["Twitter Account Age"]?.raw,
+        ethAge: elements["Ethereum Address Age"]?.raw,
+        vouchCount,
+        vouchBalance,
+        totalReviews,
+        positivePercentage,
+        mutualVouches: elements["Mutual Vouch Bonus"]?.metadata?.mutualVouches
+      },
+      topReview: topReviewData ? {
+        comment: topReviewData.comment,
+        score: topReviewData.score,
+        upvotes: topReviewResponseData.data.values[0].votes.upvotes,
+        authorName: topReviewResponseData.data.values[0].author.name
+      } : null
+    };
   } catch (error) {
-    await interaction.reply({
-      content: `An error occurred: ${error.message}`,
-      ephemeral: true
-    });
+    console.error("Error fetching Ethos profile:", error);
+    return { error: "Something went wrong while fetching the profile. Please try again later." };
   }
-});
+}
 
-client.on("ready", () => {
-  console.log(`Logged in as ${client.user?.tag}!`);
-});
+// Helper function to convert hex to Uint8Array
+function hexToUint8Array(hex: string): Uint8Array {
+  return new Uint8Array(hex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) || []);
+}
 
-// Connect to Discord
-client.connect(DISCORD_TOKEN); 
+// Verify the request is from Discord
+async function verifyRequest(request: Request): Promise<APIInteraction | null> {
+  console.log("Received request:", request.method);
+  console.log("Headers:", Object.fromEntries(request.headers.entries()));
+  
+  const signature = request.headers.get("x-signature-ed25519");
+  const timestamp = request.headers.get("x-signature-timestamp");
+  
+  if (!signature || !timestamp) {
+    console.error("Missing signature or timestamp");
+    console.error("signature:", signature);
+    console.error("timestamp:", timestamp);
+    return null;
+  }
+  
+  const body = await request.text();
+  console.log("Request body:", body);
+  
+  try {
+    console.log("Using public key:", PUBLIC_KEY);
+
+    const key = await crypto.subtle.importKey(
+      "raw",
+      hexToUint8Array(PUBLIC_KEY || ''),
+      {
+        name: "Ed25519"
+      },
+      false,
+      ["verify"]
+    );
+
+    const signatureUint8 = hexToUint8Array(signature);
+    const timestampAndBody = new TextEncoder().encode(timestamp + body);
+    
+    console.log("Signature length:", signatureUint8.length);
+    console.log("Message length:", timestampAndBody.length);
+
+    const isValid = await crypto.subtle.verify(
+      {
+        name: "Ed25519"
+      },
+      key,
+      signatureUint8,
+      timestampAndBody
+    );
+    
+    console.log("Signature verification result:", isValid);
+    
+    if (!isValid) {
+      console.error("Invalid signature");
+      return null;
+    }
+    
+    return JSON.parse(body);
+  } catch (error) {
+    console.error("Error verifying request:", error);
+    return null;
+  }
+}
+
+// Handle Discord interactions
+async function handleInteraction(interaction: APIInteraction): Promise<APIInteractionResponse> {
+  switch (interaction.type) {
+    // Respond to ping from Discord
+    case InteractionType.Ping:
+      return {
+        type: InteractionResponseType.Pong
+      };
+    
+    // Handle slash commands
+    case InteractionType.ApplicationCommand: {
+      if (interaction.data?.name !== "ethos") {
+        return {
+          type: InteractionResponseType.ChannelMessageWithSource,
+          data: {
+            content: "Unknown command",
+            flags: 64 // Ephemeral
+          }
+        };
+      }
+
+      const twitterHandle = interaction.data.options?.[0].value?.toString().replace("@", "");
+      if (!twitterHandle) {
+        return {
+          type: InteractionResponseType.ChannelMessageWithSource,
+          data: {
+            content: "Please provide a Twitter handle!",
+            flags: 64 // Ephemeral
+          }
+        };
+      }
+
+      const profile = await fetchEthosProfile(twitterHandle);
+      
+      if ("error" in profile) {
+        return {
+          type: InteractionResponseType.ChannelMessageWithSource,
+          data: {
+            content: profile.error,
+            flags: 64 // Ephemeral
+          }
+        };
+      }
+
+      return {
+        type: InteractionResponseType.ChannelMessageWithSource,
+        data: {
+          embeds: [{
+            title: `Ethos profile for @${twitterHandle}`,
+            url: `https://ethos.network/score/service:x.com:${profile.twitterId}`,
+            description: `${profile.name} is considered **${getScoreLabel(profile.score)}**.`,
+            color: getScoreColor(profile.score),
+            thumbnail: {
+              url: profile.avatar
+            },
+            fields: [
+              {
+                name: "Ethos score",
+                value: String(profile.score ?? "N/A"),
+                inline: true
+              },
+              {
+                name: "Reviews",
+                value: `${profile.elements?.totalReviews} (${profile.elements?.positivePercentage?.toFixed(2)}% positive)`,
+                inline: true
+              },
+              {
+                name: "Vouched",
+                value: `${profile.elements?.vouchCount} (${profile.elements?.vouchBalance}e vouched)`,
+                inline: true
+              },
+              ...(profile.topReview ? [{
+                name: "Most upvoted review",
+                value: `*"${profile.topReview.comment}"* - ${profile.topReview.authorName} (${profile.topReview.upvotes} upvotes)`,
+                inline: false
+              }] : [])
+            ],
+            footer: {
+              text: "Data from https://app.ethos.network"
+            },
+            timestamp: new Date().toISOString()
+          }]
+        }
+      };
+    }
+
+    default:
+      return {
+        type: InteractionResponseType.ChannelMessageWithSource,
+        data: {
+          content: "Unsupported interaction type",
+          flags: 64 // Ephemeral
+        }
+      };
+  }
+}
+
+function getScoreLabel(score: number): string {
+  if (score >= 2000) return "exemplary";
+  if (score >= 1600) return "reputable";
+  if (score >= 1200) return "neutral";
+  if (score >= 800) return "questionable";
+  return "untrusted";
+}
+
+function getScoreColor(score: number): number {
+  if (score >= 2000) return 0x127F31; // Exemplary - Green
+  if (score >= 1600) return 0x2E7BC3; // Reputable - Blue
+  if (score >= 1200) return 0xC1C0B6; // Neutral - Gray
+  if (score >= 800) return 0xCC9A1A;  // Questionable - Yellow
+  return 0xB72B38; // Untrusted - Red
+}
+
+// Start HTTP server
+serve(async (req) => {
+  if (req.method === "POST") {
+    try {
+      const interaction = await verifyRequest(req);
+      if (!interaction) {
+        return new Response("Invalid request signature", { status: 401 });
+      }
+
+      const response = await handleInteraction(interaction);
+      return new Response(JSON.stringify(response), {
+        headers: { "Content-Type": "application/json" }
+      });
+    } catch (error) {
+      console.error("Error handling request:", error);
+      return new Response("Internal Server Error", { status: 500 });
+    }
+  }
+
+  return new Response("OK", { status: 200 });
+}); 
