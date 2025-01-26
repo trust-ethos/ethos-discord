@@ -13,7 +13,10 @@ const PUBLIC_KEY = Deno.env.get("DISCORD_PUBLIC_KEY");
 const APPLICATION_ID = Deno.env.get("DISCORD_APPLICATION_ID");
 
 if (!PUBLIC_KEY || !APPLICATION_ID) {
-  throw new Error("Missing required environment variables DISCORD_PUBLIC_KEY or DISCORD_APPLICATION_ID");
+  console.error("Environment variables check failed:");
+  console.error("DISCORD_PUBLIC_KEY:", PUBLIC_KEY ? "set" : "missing");
+  console.error("DISCORD_APPLICATION_ID:", APPLICATION_ID ? "set" : "missing");
+  // Don't throw, just log the error
 }
 
 // Function to fetch Ethos profile
