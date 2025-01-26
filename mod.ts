@@ -260,7 +260,7 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
         data: {
           embeds: [{
             title: `Ethos profile for @${twitterHandle}`,
-            url: `https://app.ethos.network/profile/x/${twitterHandle}`,
+            url: `https://app.ethos.network/profile/x/${twitterHandle}?src=discord-agent`,
             description: `${profile.name} is considered **${getScoreLabel(profile.score)}**.`,
             color: getScoreColor(profile.score),
             thumbnail: {
