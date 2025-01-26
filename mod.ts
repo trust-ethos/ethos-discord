@@ -260,7 +260,7 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
         data: {
           embeds: [{
             title: `Ethos profile for @${twitterHandle}`,
-            url: `https://ethos.network/score/service:x.com:${profile.twitterId}`,
+            url: `https://app.ethos.network/profile/x/${twitterHandle}`,
             description: `${profile.name} is considered **${getScoreLabel(profile.score)}**.`,
             color: getScoreColor(profile.score),
             thumbnail: {
