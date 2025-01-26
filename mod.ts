@@ -276,7 +276,7 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
               },
               {
                 name: "Vouched",
-                value: `${profile.elements?.vouchCount} (${profile.elements?.vouchBalance}e vouched)`,
+                value: `${profile.elements?.vouchBalance}e (${profile.elements?.vouchCount} vouchers)`,
                 inline: true
               },
               ...(profile.topReview ? [{
