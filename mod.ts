@@ -8,15 +8,9 @@ import {
 
 // Load environment variables
 const DISCORD_TOKEN = Deno.env.get("DISCORD_TOKEN");
-const ETHOS_API_KEY = Deno.env.get("ETHOS_API_KEY");
 
 if (!DISCORD_TOKEN) {
   console.error("Missing DISCORD_TOKEN environment variable");
-  Deno.exit(1);
-}
-
-if (!ETHOS_API_KEY) {
-  console.error("Missing ETHOS_API_KEY environment variable");
   Deno.exit(1);
 }
 
@@ -43,11 +37,7 @@ client.on("slashCommand", async (interaction: SlashCommandContext) => {
   await interaction.defer();
 
   try {
-    const response = await fetch(`https://api.ethos.com/v1/profile/${twitterHandle}`, {
-      headers: {
-        "Authorization": `Bearer ${ETHOS_API_KEY}`
-      }
-    });
+    const response = await fetch(`https://ethos.com/api/v1/profiles/${twitterHandle}`);
 
     if (response.ok) {
       const data = await response.json();
