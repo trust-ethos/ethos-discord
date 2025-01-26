@@ -1,5 +1,10 @@
-# Environment variables
+# Deno
+.deno/
+
+# Environment variables and secrets
 .env
+*.env
+.env.*
 
 # Python
 __pycache__/

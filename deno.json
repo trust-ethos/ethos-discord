@@ -1,0 +1,8 @@
+{
+  "tasks": {
+    "start": "deno run --allow-net --allow-env mod.ts"
+  },
+  "imports": {
+    "harmony": "https://deno.land/x/harmony/mod.ts"
+  }
+} 

@@ -1,26 +1,36 @@
 # Ethos Discord Bot
 
-A Discord bot that fetches and displays Ethos profile information for Twitter users.
+A Discord bot that fetches and displays Ethos profile information for Twitter users, built with Deno and Harmony.
 
-## Setup
+## Prerequisites
 
-1. Create a `.env` file with your Discord bot token and Ethos API credentials:
-```
-DISCORD_TOKEN=your_discord_bot_token
-ETHOS_API_KEY=your_ethos_api_key
-```
+1. Install [Deno](https://deno.land/#installation)
+2. Set up your environment variables:
+   ```bash
+   # On macOS/Linux
+   export DISCORD_TOKEN=your_discord_bot_token
+   export ETHOS_API_KEY=your_ethos_api_key
+   
+   # On Windows
+   set DISCORD_TOKEN=your_discord_bot_token
+   set ETHOS_API_KEY=your_ethos_api_key
+   ```
 
-2. Install dependencies:
+## Running the Bot
+
 ```bash
-pip install -r requirements.txt
+deno task start
 ```
 
-3. Run the bot:
-```bash
-python bot.py
-```
+This will start the bot with the necessary permissions for network access and environment variables.
 
 ## Usage
 
-Use the following command in Discord:
-- `/ethos @twitterhandle` - Look up Ethos profile for a Twitter user 
+Use the following slash command in Discord:
+- `/ethos @twitterhandle` - Look up Ethos profile for a Twitter user
+
+## Development
+
+The bot is built using:
+- [Deno](https://deno.land/) - A modern runtime for JavaScript and TypeScript
+- [Harmony](https://github.com/harmonyland/harmony) - A Discord API library for Deno 
