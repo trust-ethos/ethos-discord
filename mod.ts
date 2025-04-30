@@ -1,3 +1,4 @@
+// @deno-types="https://deno.land/x/servest/types/react/index.d.ts"
 import {
   serve,
   crypto,
@@ -42,32 +43,19 @@ async function fetchEthosProfile(handle: string) {
     }
 
     const twitterId = twitterData.data.id;
-    const target = `service:x.com:${twitterId}`;
+    const userkey = `service:x.com:${twitterId}`;
     
-    // Fetch profile, review stats, and vouch stats
-    const [profileResponse, reviewStatsResponse, vouchStatsResponse, topReviewResponse] = await Promise.all([
-      fetch(`https://api.ethos.network/api/v1/score/${target}`),
-      fetch(`https://api.ethos.network/api/v1/reviews/stats`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ target })
-      }),
-      fetch(`https://api.ethos.network/api/v1/vouches/stats`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ target })
-      }),
+    // Fetch profile score and user statistics using the new API endpoint
+    const [profileResponse, userStatsResponse, topReviewResponse] = await Promise.all([
+      fetch(`https://api.ethos.network/api/v1/score/${userkey}`),
+      fetch(`https://api.ethos.network/api/v1/users/${userkey}/stats`),
       fetch(`https://api.ethos.network/api/v1/activities/unified`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          target,
+          target: userkey,
           direction: "subject",
           orderBy: {
             field: "votes",
@@ -97,23 +85,24 @@ async function fetchEthosProfile(handle: string) {
       return { error: "This profile hasn't been indexed by Ethos yet. Please try again later." };
     }
 
-    const reviewStats = await reviewStatsResponse.json();
-    console.log("Review Stats API Response:", JSON.stringify(reviewStats, null, 2));
-    console.log("Review Stats target:", target);
-    
-    const vouchStats = await vouchStatsResponse.json();
-    console.log("Vouch Stats API Response:", JSON.stringify(vouchStats, null, 2));
+    const userStats = await userStatsResponse.json();
+    console.log("User Stats API Response:", JSON.stringify(userStats, null, 2));
     
     const topReviewResponseData = await topReviewResponse.json();
     console.log("Top Review Response:", JSON.stringify(topReviewResponseData, null, 2));
     
     const topReviewData = topReviewResponseData.ok && topReviewResponseData.data?.values?.[0]?.data;
 
-    const totalReviews = reviewStats.ok ? reviewStats.data?.total?.received || 0 : 0;
-    const positivePercentage = reviewStats.ok ? reviewStats.data?.total?.positiveReviewPercentage || 0 : 0;
+    // Extract review stats from the new unified response
+    const totalReviews = userStats.ok ? userStats.data?.reviews?.received || 0 : 0;
+    const positiveReviewCount = userStats.ok ? userStats.data?.reviews?.positiveReviewCount || 0 : 0;
+    const negativeReviewCount = userStats.ok ? userStats.data?.reviews?.negativeReviewCount || 0 : 0;
+    const positivePercentage = userStats.ok ? userStats.data?.reviews?.positiveReviewPercentage || 0 : 0;
     
-    const vouchCount = vouchStats.ok ? vouchStats.data?.count?.received || 0 : 0;
-    const vouchBalance = vouchStats.ok ? Number(vouchStats.data?.balance?.received || 0).toFixed(2) : "0.00";
+    // Extract vouch stats from the new unified response
+    const vouchCount = userStats.ok ? userStats.data?.vouches?.count?.received || 0 : 0;
+    const vouchBalance = userStats.ok ? Number(userStats.data?.vouches?.balance?.received || 0).toFixed(2) : "0.00";
+    const mutualVouches = userStats.ok ? userStats.data?.vouches?.count?.mutual || 0 : 0;
 
     const scoreData = profileData.data;
     const elements = scoreData.elements || {};
@@ -131,7 +120,7 @@ async function fetchEthosProfile(handle: string) {
         vouchBalance,
         totalReviews,
         positivePercentage,
-        mutualVouches: elements["Mutual Vouch Bonus"]?.metadata?.mutualVouches
+        mutualVouches
       },
       topReview: topReviewData ? {
         comment: topReviewData.comment,
