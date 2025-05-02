@@ -62,7 +62,7 @@ async function testEthosCommand() {
           "123456789012345678": {
             id: "123456789012345678",
             username: "TestUser",
-            avatar: "abcdef123456",
+            avatar: "abcdef123456", // Discord avatar hash
             discriminator: "0",
             global_name: "Test User"
           }
@@ -72,6 +72,8 @@ async function testEthosCommand() {
   };
 
   console.log("\nTesting /ethos command with Discord user mention...");
+  console.log("Discord will resolve the user to 'TestUser' with avatar hash 'abcdef123456'");
+  console.log("Avatar URL will be: https://cdn.discordapp.com/avatars/123456789012345678/abcdef123456.png");
 
   try {
     const response = await fetch("http://localhost:8000", {

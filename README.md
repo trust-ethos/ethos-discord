@@ -31,7 +31,9 @@ The bot provides two slash commands for looking up Ethos profiles:
 - `/ethos @user` - Look up Ethos profile for a Discord user
   - Simply mention a Discord user as a parameter
   - Discord will provide a user selection interface
-  - The bot will display the user's username and link to their Ethos profile using their primary Ethereum address
+  - The bot will display the user's actual username (without their ID)
+  - Uses the user's Discord avatar in the response
+  - Links to their Ethos profile using their primary Ethereum address
 
 - `/ethosx [twitter_handle]` - Look up Ethos profile for a Twitter user
   - Examples:

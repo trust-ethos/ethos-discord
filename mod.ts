@@ -27,7 +27,7 @@ function isDiscordHandle(handle: string): boolean {
 }
 
 // Function to fetch Ethos profile by Discord user ID
-async function fetchEthosProfileByDiscord(userId: string) {
+async function fetchEthosProfileByDiscord(userId: string, discordAvatarUrl?: string) {
   try {
     console.log("Looking up Discord user with ID:", userId);
     
@@ -120,7 +120,7 @@ async function fetchEthosProfileByDiscord(userId: string) {
       score: scoreData.score,
       handle: cleanUserId, // Use the clean user ID as the handle
       userId: cleanUserId,
-      avatar: scoreData.avatar || "https://cdn.discordapp.com/embed/avatars/0.png", // Default Discord avatar if none available
+      avatar: discordAvatarUrl || scoreData.avatar || "https://cdn.discordapp.com/embed/avatars/0.png", // Use Discord avatar if provided
       name: scoreData.name || `Discord User ${cleanUserId}`,
       service: 'discord',
       primaryAddress,
@@ -372,7 +372,14 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
         
         console.log("Discord username:", username);
         
-        const profile = await fetchEthosProfileByDiscord(userId);
+        // Get user's Discord avatar URL if available
+        let avatarUrl: string | undefined = undefined;
+        if (userData?.avatar) {
+          // Discord avatar format: https://cdn.discordapp.com/avatars/{user.id}/{user.avatar}.png
+          avatarUrl = `https://cdn.discordapp.com/avatars/${userId}/${userData.avatar}.png`;
+        }
+        
+        const profile = await fetchEthosProfileByDiscord(userId, avatarUrl);
         
         if ("error" in profile) {
           return {
@@ -384,8 +391,8 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
           };
         }
 
-        // Display the user by their username in the title, but still include the mention for Discord
-        const title = `Ethos profile for ${username} (<@${profile.userId}>)`;
+        // Display just the username in the title, without the Discord ID mention
+        const title = `Ethos profile for ${username}`;
         
         // Use the primary address for the profile URL if available, otherwise fall back to Discord
         let profileUrl;
@@ -404,7 +411,8 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
               description: `${username} is considered **${getScoreLabel(profile.score)}**.`,
               color: getScoreColor(profile.score),
               thumbnail: {
-                url: profile.avatar
+                // Use Discord avatar if available, otherwise use Ethos avatar or default
+                url: avatarUrl || profile.avatar || "https://cdn.discordapp.com/embed/avatars/0.png"
               },
               fields: [
                 {
