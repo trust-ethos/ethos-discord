@@ -44,7 +44,7 @@ The bot provides the following slash commands:
     - `/ethosx vitalik` - Look up Twitter user @vitalik
     - `/ethosx @vitalik` - Look up Twitter user @vitalik
 
-- `/ethosVerify` - Verify that you have an Ethos profile and get assigned a role
+- `/ethos_verify` - Verify that you have an Ethos profile and get assigned a role
   - No parameters needed - uses your own Discord account
   - Checks if you have an Ethos profile
   - If verified, assigns you the configured role in the server

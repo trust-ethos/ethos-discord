@@ -414,7 +414,7 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
       const commandName = interaction.data?.name;
 
       // Handle ethosVerify command (verify user and assign role)
-      if (commandName === "ethosVerify") {
+      if (commandName === "ethos_verify") {
         // Get the user's ID directly from the interaction
         const userId = interaction.member?.user?.id;
         const guildId = interaction.guild_id;

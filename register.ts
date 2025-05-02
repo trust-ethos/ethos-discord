@@ -34,7 +34,7 @@ const commands = [
     }]
   },
   {
-    name: "ethosVerify",
+    name: "ethos_verify",
     description: "Verify and assign a role if you have an Ethos profile",
     type: 1, // ChatInput
     options: [] // No options needed as it will use the user's own Discord ID

@@ -113,12 +113,12 @@ async function testEthosVerifyCommand() {
       }
     },
     data: {
-      name: "ethosVerify"
+      name: "ethos_verify"
       // No options needed for this command
     }
   };
 
-  console.log("\nTesting /ethosVerify command...");
+  console.log("\nTesting /ethos_verify command...");
   console.log("User ID: 123456789012345678, Guild ID: 987654321098765432");
 
   try {
