@@ -344,7 +344,150 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
     
     // Handle slash commands
     case InteractionType.ApplicationCommand: {
-      if (interaction.data?.name !== "ethos") {
+      const commandName = interaction.data?.name;
+
+      // Handle ethos command (Discord profiles)
+      if (commandName === "ethos") {
+        const discordHandle = interaction.data.options?.[0].value?.toString();
+        if (!discordHandle) {
+          return {
+            type: InteractionResponseType.ChannelMessageWithSource,
+            data: {
+              content: "Please provide a Discord username!",
+              flags: 64 // Ephemeral
+            }
+          };
+        }
+
+        const profile = await fetchEthosProfileByDiscord(discordHandle);
+        
+        if ("error" in profile) {
+          return {
+            type: InteractionResponseType.ChannelMessageWithSource,
+            data: {
+              content: profile.error,
+              flags: 64 // Ephemeral
+            }
+          };
+        }
+
+        const title = `Ethos profile for Discord user '${profile.handle}'`;
+        const profileUrl = `https://app.ethos.network/profile/discord/${profile.handle}?src=discord-agent`;
+
+        return {
+          type: InteractionResponseType.ChannelMessageWithSource,
+          data: {
+            embeds: [{
+              title,
+              url: profileUrl,
+              description: `${profile.name} is considered **${getScoreLabel(profile.score)}**.`,
+              color: getScoreColor(profile.score),
+              thumbnail: {
+                url: profile.avatar
+              },
+              fields: [
+                {
+                  name: "Ethos score",
+                  value: String(profile.score ?? "N/A"),
+                  inline: true
+                },
+                {
+                  name: "Reviews",
+                  value: `${profile.elements?.totalReviews} (${profile.elements?.positivePercentage?.toFixed(2)}% positive)`,
+                  inline: true
+                },
+                {
+                  name: "Vouched",
+                  value: `${profile.elements?.vouchBalance}e (${profile.elements?.vouchCount} vouchers)`,
+                  inline: true
+                },
+                ...(profile.topReview ? [{
+                  name: "Most upvoted review",
+                  value: `*"${profile.topReview.comment}"* - ${profile.topReview.authorName} (${profile.topReview.upvotes} upvotes)`,
+                  inline: false
+                }] : [])
+              ],
+              footer: {
+                text: "Data from https://app.ethos.network"
+              },
+              timestamp: new Date().toISOString()
+            }]
+          }
+        };
+      }
+      
+      // Handle ethosx command (Twitter profiles)
+      else if (commandName === "ethosx") {
+        const twitterHandle = interaction.data.options?.[0].value?.toString();
+        if (!twitterHandle) {
+          return {
+            type: InteractionResponseType.ChannelMessageWithSource,
+            data: {
+              content: "Please provide a Twitter handle!",
+              flags: 64 // Ephemeral
+            }
+          };
+        }
+
+        const profile = await fetchEthosProfileByTwitter(twitterHandle);
+        
+        if ("error" in profile) {
+          return {
+            type: InteractionResponseType.ChannelMessageWithSource,
+            data: {
+              content: profile.error,
+              flags: 64 // Ephemeral
+            }
+          };
+        }
+
+        const title = `Ethos profile for @${profile.handle}`;
+        const profileUrl = `https://app.ethos.network/profile/x/${profile.handle}?src=discord-agent`;
+
+        return {
+          type: InteractionResponseType.ChannelMessageWithSource,
+          data: {
+            embeds: [{
+              title,
+              url: profileUrl,
+              description: `${profile.name} is considered **${getScoreLabel(profile.score)}**.`,
+              color: getScoreColor(profile.score),
+              thumbnail: {
+                url: profile.avatar
+              },
+              fields: [
+                {
+                  name: "Ethos score",
+                  value: String(profile.score ?? "N/A"),
+                  inline: true
+                },
+                {
+                  name: "Reviews",
+                  value: `${profile.elements?.totalReviews} (${profile.elements?.positivePercentage?.toFixed(2)}% positive)`,
+                  inline: true
+                },
+                {
+                  name: "Vouched",
+                  value: `${profile.elements?.vouchBalance}e (${profile.elements?.vouchCount} vouchers)`,
+                  inline: true
+                },
+                ...(profile.topReview ? [{
+                  name: "Most upvoted review",
+                  value: `*"${profile.topReview.comment}"* - ${profile.topReview.authorName} (${profile.topReview.upvotes} upvotes)`,
+                  inline: false
+                }] : [])
+              ],
+              footer: {
+                text: "Data from https://app.ethos.network"
+              },
+              timestamp: new Date().toISOString()
+            }]
+          }
+        };
+      }
+      
+      // Unknown command
+      else {
         return {
           type: InteractionResponseType.ChannelMessageWithSource,
           data: {
@@ -353,79 +496,6 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
           }
         };
       }
-
-      const handle = interaction.data.options?.[0].value?.toString();
-      if (!handle) {
-        return {
-          type: InteractionResponseType.ChannelMessageWithSource,
-          data: {
-            content: "Please provide a Twitter or Discord handle!",
-            flags: 64 // Ephemeral
-          }
-        };
-      }
-
-      const profile = await fetchEthosProfile(handle);
-      
-      if ("error" in profile) {
-        return {
-          type: InteractionResponseType.ChannelMessageWithSource,
-          data: {
-            content: profile.error,
-            flags: 64 // Ephemeral
-          }
-        };
-      }
-
-      let profileUrl, title;
-      if (profile.service === 'discord') {
-        title = `Ethos profile for Discord user '${profile.handle}'`;
-        profileUrl = `https://app.ethos.network/profile/discord/${profile.handle}?src=discord-agent`;
-      } else {
-        title = `Ethos profile for @${profile.handle}`;
-        profileUrl = `https://app.ethos.network/profile/x/${profile.handle}?src=discord-agent`;
-      }
-
-      return {
-        type: InteractionResponseType.ChannelMessageWithSource,
-        data: {
-          embeds: [{
-            title,
-            url: profileUrl,
-            description: `${profile.name} is considered **${getScoreLabel(profile.score)}**.`,
-            color: getScoreColor(profile.score),
-            thumbnail: {
-              url: profile.avatar
-            },
-            fields: [
-              {
-                name: "Ethos score",
-                value: String(profile.score ?? "N/A"),
-                inline: true
-              },
-              {
-                name: "Reviews",
-                value: `${profile.elements?.totalReviews} (${profile.elements?.positivePercentage?.toFixed(2)}% positive)`,
-                inline: true
-              },
-              {
-                name: "Vouched",
-                value: `${profile.elements?.vouchBalance}e (${profile.elements?.vouchCount} vouchers)`,
-                inline: true
-              },
-              ...(profile.topReview ? [{
-                name: "Most upvoted review",
-                value: `*"${profile.topReview.comment}"* - ${profile.topReview.authorName} (${profile.topReview.upvotes} upvotes)`,
-                inline: false
-              }] : [])
-            ],
-            footer: {
-              text: "Data from https://app.ethos.network"
-            },
-            timestamp: new Date().toISOString()
-          }]
-        }
-      };
     }
 
     default:

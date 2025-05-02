@@ -26,16 +26,17 @@ This will start the bot with the necessary permissions for network access and en
 
 ## Usage
 
-Use the following slash command in Discord:
-- `/ethos [handle]` - Look up Ethos profile using either:
-  - Twitter handle (with or without @)
-  - Discord username (with or without #)
+The bot provides two slash commands for looking up Ethos profiles:
 
-Examples:
-- `/ethos vitalik` - Look up Twitter user @vitalik
-- `/ethos @vitalik` - Look up Twitter user @vitalik
-- `/ethos discord_user` - Look up Discord user
-- `/ethos discord_user#1234` - Look up Discord user with discriminator
+- `/ethos [discord_handle]` - Look up Ethos profile for a Discord user
+  - Examples:
+    - `/ethos discord_user` - Look up Discord user
+    - `/ethos discord_user#1234` - Look up Discord user with discriminator
+
+- `/ethosx [twitter_handle]` - Look up Ethos profile for a Twitter user
+  - Examples:
+    - `/ethosx vitalik` - Look up Twitter user @vitalik
+    - `/ethosx @vitalik` - Look up Twitter user @vitalik
 
 ## Development
 
@@ -50,4 +51,4 @@ To test the bot locally:
 deno run --allow-net test.ts
 ```
 
-This will simulate Discord interactions for both Twitter and Discord handle lookups. 
+This will simulate Discord interactions for both commands. 

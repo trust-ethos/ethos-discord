@@ -9,37 +9,50 @@ if (!DISCORD_TOKEN || !APPLICATION_ID) {
   Deno.exit(1);
 }
 
-// Register the slash command
-const command = {
-  name: "ethos",
-  description: "Look up Ethos profile for a user",
-  type: 1, // ChatInput
-  options: [{
-    type: 3, // String
-    name: "handle",
-    description: "Twitter handle or Discord username to look up (with or without @ for Twitter)",
-    required: true
-  }]
-};
+// Register the slash commands
+const commands = [
+  {
+    name: "ethos",
+    description: "Look up Ethos profile for a Discord user",
+    type: 1, // ChatInput
+    options: [{
+      type: 3, // String
+      name: "discord_handle",
+      description: "Discord username to look up (with or without #)",
+      required: true
+    }]
+  },
+  {
+    name: "ethosx",
+    description: "Look up Ethos profile for a Twitter user",
+    type: 1, // ChatInput
+    options: [{
+      type: 3, // String
+      name: "twitter_handle",
+      description: "Twitter handle to look up (with or without @)",
+      required: true
+    }]
+  }
+];
 
-console.log("Registering slash command...");
+console.log("Registering slash commands...");
 
 const response = await fetch(
   `https://discord.com/api/v10/applications/${APPLICATION_ID}/commands`,
   {
-    method: "POST",
+    method: "PUT", // Use PUT to replace all commands
     headers: {
       Authorization: `Bot ${DISCORD_TOKEN}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(command),
+    body: JSON.stringify(commands),
   }
 );
 
 if (response.ok) {
-  console.log("Slash command registered successfully!");
+  console.log("Slash commands registered successfully!");
 } else {
   const error = await response.text();
-  console.error("Failed to register slash command:", error);
+  console.error("Failed to register slash commands:", error);
   Deno.exit(1);
 } 

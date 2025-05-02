@@ -4,7 +4,7 @@ export {};
 import { InteractionType } from "./deps.ts";
 
 // Test the Discord bot with Twitter handle
-async function testTwitterLookup() {
+async function testEthosXCommand() {
   // Simulate a Discord interaction
   const interaction = {
     type: 2, // ApplicationCommand
@@ -13,15 +13,15 @@ async function testTwitterLookup() {
     token: "test_token",
     version: 1,
     data: {
-      name: "ethos",
+      name: "ethosx",
       options: [{
-        name: "handle",
+        name: "twitter_handle",
         value: "vitalik"  // Test with a known Ethereum profile
       }]
     }
   };
 
-  console.log("Testing /ethos command with Twitter handle 'vitalik'...");
+  console.log("Testing /ethosx command with Twitter handle 'vitalik'...");
 
   try {
     const response = await fetch("http://localhost:8000", {
@@ -42,7 +42,7 @@ async function testTwitterLookup() {
 }
 
 // Test the Discord bot with Discord handle
-async function testDiscordLookup() {
+async function testEthosCommand() {
   // Simulate a Discord interaction
   const interaction = {
     type: 2, // ApplicationCommand
@@ -53,7 +53,7 @@ async function testDiscordLookup() {
     data: {
       name: "ethos",
       options: [{
-        name: "handle",
+        name: "discord_handle",
         value: "ethos#1234"  // Test with a Discord handle
       }]
     }
@@ -81,8 +81,8 @@ async function testDiscordLookup() {
 
 // Run the tests
 async function runTests() {
-  await testTwitterLookup();
-  await testDiscordLookup();
+  await testEthosCommand();
+  await testEthosXCommand();
 }
 
 runTests(); 
