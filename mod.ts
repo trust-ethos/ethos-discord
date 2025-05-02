@@ -31,8 +31,12 @@ async function fetchEthosProfileByDiscord(userId: string) {
   try {
     console.log("Looking up Discord user with ID:", userId);
     
-    // Use the Ethos API with the Discord ID
-    const userkey = `service:discord:${userId}`;
+    // Make sure we're just using the raw ID without any @ symbol
+    const cleanUserId = userId.replace('@', '').replace('<', '').replace('>', '');
+    console.log("Clean User ID:", cleanUserId);
+    
+    // Use the Ethos API with the Discord ID - ensure proper format
+    const userkey = `service:discord:${cleanUserId}`;
     
     // Fetch profile score and user statistics using the API endpoint
     const [profileResponse, userStatsResponse, topReviewResponse] = await Promise.all([
@@ -62,7 +66,7 @@ async function fetchEthosProfileByDiscord(userId: string) {
     
     if (!profileResponse.ok) {
       if (profileResponse.status === 404) {
-        return { error: `No Ethos profile found for Discord user with ID '${userId}'. They can create one at https://ethos.network` };
+        return { error: `No Ethos profile found for Discord user with ID '${cleanUserId}'. They can create one at https://ethos.network` };
       }
       return { error: "Failed to fetch profile. Please try again later." };
     }
@@ -98,10 +102,10 @@ async function fetchEthosProfileByDiscord(userId: string) {
 
     return {
       score: scoreData.score,
-      handle: userId, // Use the user ID as the handle
-      userId,
+      handle: cleanUserId, // Use the clean user ID as the handle
+      userId: cleanUserId,
       avatar: scoreData.avatar || "https://cdn.discordapp.com/embed/avatars/0.png", // Default Discord avatar if none available
-      name: scoreData.name || `Discord User ${userId}`,
+      name: scoreData.name || `Discord User ${cleanUserId}`,
       service: 'discord',
       elements: {
         accountAge: elements["Discord Account Age"]?.raw,
@@ -331,6 +335,7 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
 
       // Handle ethos command (Discord profiles)
       if (commandName === "ethos") {
+        // With a User type option, Discord will automatically provide the user ID
         const userId = interaction.data.options?.[0].value?.toString();
         if (!userId) {
           return {
@@ -342,6 +347,8 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
           };
         }
 
+        console.log("Discord user ID from interaction:", userId);
+        
         const profile = await fetchEthosProfileByDiscord(userId);
         
         if ("error" in profile) {
@@ -354,7 +361,8 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
           };
         }
 
-        const title = `Ethos profile for Discord user <@${profile.userId}>`;
+        // Display the user as a mention in the title
+        const title = `Ethos profile for <@${profile.userId}>`;
         const profileUrl = `https://app.ethos.network/profile/discord/${profile.userId}?src=discord-agent`;
 
         return {
