@@ -12,12 +12,12 @@ if (!DISCORD_TOKEN || !APPLICATION_ID) {
 // Register the slash command
 const command = {
   name: "ethos",
-  description: "Look up Ethos profile for a Twitter user",
+  description: "Look up Ethos profile for a user",
   type: 1, // ChatInput
   options: [{
     type: 3, // String
-    name: "twitter_handle",
-    description: "Twitter handle to look up (with or without @)",
+    name: "handle",
+    description: "Twitter handle or Discord username to look up (with or without @ for Twitter)",
     required: true
   }]
 };

@@ -20,8 +20,130 @@ if (!PUBLIC_KEY || !APPLICATION_ID) {
   // Don't throw, just log the error
 }
 
-// Function to fetch Ethos profile
-async function fetchEthosProfile(handle: string) {
+// Helper function to check if a handle is likely a Discord handle
+function isDiscordHandle(handle: string): boolean {
+  // Discord handles typically don't start with @ and may contain a #
+  return !handle.startsWith('@') || handle.includes('#');
+}
+
+// Function to fetch Ethos profile by Discord handle
+async function fetchEthosProfileByDiscord(handle: string) {
+  try {
+    // Format handle for discord service
+    const formattedHandle = handle.replace('#', '');
+    
+    // Fetch Discord user info from Ethos API
+    const discordResponse = await fetch(`https://api.ethos.network/api/discord/user/?username=${formattedHandle}`);
+    if (!discordResponse.ok) {
+      if (discordResponse.status === 404) {
+        return { error: `Discord user '${formattedHandle}' not found` };
+      }
+      return { error: "Failed to fetch Discord info. Please try again later." };
+    }
+
+    const discordData = await discordResponse.json();
+    console.log("Discord API Response:", JSON.stringify(discordData, null, 2));
+
+    if (!discordData.ok || !discordData.data?.id) {
+      return { error: "Could not find Discord ID for this handle" };
+    }
+
+    const discordId = discordData.data.id;
+    const userkey = `service:discord:${discordId}`;
+    
+    // Fetch profile score and user statistics using the API endpoint
+    const [profileResponse, userStatsResponse, topReviewResponse] = await Promise.all([
+      fetch(`https://api.ethos.network/api/v1/score/${userkey}`),
+      fetch(`https://api.ethos.network/api/v1/users/${userkey}/stats`),
+      fetch(`https://api.ethos.network/api/v1/activities/unified`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          target: userkey,
+          direction: "subject",
+          orderBy: {
+            field: "votes",
+            direction: "desc"
+          },
+          filter: ["review"],
+          excludeHistorical: true,
+          pagination: {
+            offsets: {},
+            limit: 1
+          }
+        })
+      })
+    ]);
+    
+    if (!profileResponse.ok) {
+      if (profileResponse.status === 404) {
+        return { error: `No Ethos profile found for Discord user '${formattedHandle}'. They can create one at https://ethos.network` };
+      }
+      return { error: "Failed to fetch profile. Please try again later." };
+    }
+
+    const profileData = await profileResponse.json();
+    console.log("Profile API Response:", JSON.stringify(profileData, null, 2));
+
+    if (!profileData.ok || !profileData.data) {
+      return { error: "This profile hasn't been indexed by Ethos yet. Please try again later." };
+    }
+
+    const userStats = await userStatsResponse.json();
+    console.log("User Stats API Response:", JSON.stringify(userStats, null, 2));
+    
+    const topReviewResponseData = await topReviewResponse.json();
+    console.log("Top Review Response:", JSON.stringify(topReviewResponseData, null, 2));
+    
+    const topReviewData = topReviewResponseData.ok && topReviewResponseData.data?.values?.[0]?.data;
+
+    // Extract review stats from the new unified response
+    const totalReviews = userStats.ok ? userStats.data?.reviews?.received || 0 : 0;
+    const positiveReviewCount = userStats.ok ? userStats.data?.reviews?.positiveReviewCount || 0 : 0;
+    const negativeReviewCount = userStats.ok ? userStats.data?.reviews?.negativeReviewCount || 0 : 0;
+    const positivePercentage = userStats.ok ? userStats.data?.reviews?.positiveReviewPercentage || 0 : 0;
+    
+    // Extract vouch stats from the new unified response
+    const vouchCount = userStats.ok ? userStats.data?.vouches?.count?.received || 0 : 0;
+    const vouchBalance = userStats.ok ? Number(userStats.data?.vouches?.balance?.received || 0).toFixed(2) : "0.00";
+    const mutualVouches = userStats.ok ? userStats.data?.vouches?.count?.mutual || 0 : 0;
+
+    const scoreData = profileData.data;
+    const elements = scoreData.elements || {};
+
+    return {
+      score: scoreData.score,
+      handle: formattedHandle,
+      discordId,
+      avatar: discordData.data.avatar,
+      name: discordData.data.name || formattedHandle,
+      service: 'discord',
+      elements: {
+        accountAge: elements["Discord Account Age"]?.raw,
+        ethAge: elements["Ethereum Address Age"]?.raw,
+        vouchCount,
+        vouchBalance,
+        totalReviews,
+        positivePercentage,
+        mutualVouches
+      },
+      topReview: topReviewData ? {
+        comment: topReviewData.comment,
+        score: topReviewData.score,
+        upvotes: topReviewResponseData.data.values[0].votes.upvotes,
+        authorName: topReviewResponseData.data.values[0].author.name
+      } : null
+    };
+  } catch (error) {
+    console.error("Error fetching Ethos profile by Discord:", error);
+    return { error: "Something went wrong while fetching the profile. Please try again later." };
+  }
+}
+
+// Function to fetch Ethos profile by Twitter handle
+async function fetchEthosProfileByTwitter(handle: string) {
   try {
     // Format handle for x.com service
     const formattedHandle = handle.replace('@', '');
@@ -113,6 +235,7 @@ async function fetchEthosProfile(handle: string) {
       twitterId,
       avatar: twitterData.data.avatar,
       name: twitterData.data.name,
+      service: 'twitter',
       elements: {
         accountAge: elements["Twitter Account Age"]?.raw,
         ethAge: elements["Ethereum Address Age"]?.raw,
@@ -130,8 +253,18 @@ async function fetchEthosProfile(handle: string) {
       } : null
     };
   } catch (error) {
-    console.error("Error fetching Ethos profile:", error);
+    console.error("Error fetching Ethos profile by Twitter:", error);
     return { error: "Something went wrong while fetching the profile. Please try again later." };
+  }
+}
+
+// Function to fetch Ethos profile
+async function fetchEthosProfile(handle: string) {
+  // Detect if handle is a Discord handle or Twitter handle
+  if (isDiscordHandle(handle)) {
+    return fetchEthosProfileByDiscord(handle);
+  } else {
+    return fetchEthosProfileByTwitter(handle);
   }
 }
 
@@ -221,18 +354,18 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
         };
       }
 
-      const twitterHandle = interaction.data.options?.[0].value?.toString().replace("@", "");
-      if (!twitterHandle) {
+      const handle = interaction.data.options?.[0].value?.toString();
+      if (!handle) {
         return {
           type: InteractionResponseType.ChannelMessageWithSource,
           data: {
-            content: "Please provide a Twitter handle!",
+            content: "Please provide a Twitter or Discord handle!",
             flags: 64 // Ephemeral
           }
         };
       }
 
-      const profile = await fetchEthosProfile(twitterHandle);
+      const profile = await fetchEthosProfile(handle);
       
       if ("error" in profile) {
         return {
@@ -244,12 +377,21 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
         };
       }
 
+      let profileUrl, title;
+      if (profile.service === 'discord') {
+        title = `Ethos profile for Discord user '${profile.handle}'`;
+        profileUrl = `https://app.ethos.network/profile/discord/${profile.handle}?src=discord-agent`;
+      } else {
+        title = `Ethos profile for @${profile.handle}`;
+        profileUrl = `https://app.ethos.network/profile/x/${profile.handle}?src=discord-agent`;
+      }
+
       return {
         type: InteractionResponseType.ChannelMessageWithSource,
         data: {
           embeds: [{
-            title: `Ethos profile for @${twitterHandle}`,
-            url: `https://app.ethos.network/profile/x/${twitterHandle}?src=discord-agent`,
+            title,
+            url: profileUrl,
             description: `${profile.name} is considered **${getScoreLabel(profile.score)}**.`,
             color: getScoreColor(profile.score),
             thumbnail: {
