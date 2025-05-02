@@ -415,6 +415,15 @@ function getRoleIdForScore(score: number): string {
   return ETHOS_ROLE_UNTRUSTED;
 }
 
+// Function to get role name based on score
+function getRoleNameForScore(score: number): string {
+  if (score >= 2000) return "Exemplary";
+  if (score >= 1600) return "Reputable";
+  if (score >= 1200) return "Neutral";
+  if (score >= 800) return "Questionable";
+  return "Untrusted";
+}
+
 // Function to remove all Ethos roles from a user
 async function removeAllEthosRoles(guildId: string, userId: string): Promise<boolean> {
   const allRoles = [
@@ -523,6 +532,8 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
           };
         }
         
+        console.log(`User ${userId} has Ethos score: ${profile.score}`);
+        
         // Assign the verified role
         const verifiedResult = await assignRoleToUser(guildId, userId, ETHOS_VERIFIED_ROLE_ID);
         
@@ -538,15 +549,20 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
         
         // Assign score-based role
         const scoreRoleId = getRoleIdForScore(profile.score);
+        const roleName = getRoleNameForScore(profile.score);
+        
+        console.log(`Assigning score role: ${roleName} (ID: ${scoreRoleId}) for score ${profile.score}`);
+        
         const scoreResult = await assignRoleToUser(guildId, userId, scoreRoleId);
         
         // Create response message
         let responseMessage = "✅ Verification successful! ";
         
         if (scoreResult.success) {
-          responseMessage += `You've been assigned the ${getScoreLabel(profile.score)} role with a score of ${profile.score}.`;
+          responseMessage += `You've been assigned the "${roleName}" role with a score of ${profile.score}.`;
         } else {
           responseMessage += `You've been verified but there was an error assigning your score role: ${scoreResult.error}`;
+          console.error(`Failed to assign score role ${roleName} (${scoreRoleId}) to user ${userId}: ${scoreResult.error}`);
         }
         
         return {
