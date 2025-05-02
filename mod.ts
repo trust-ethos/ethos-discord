@@ -54,9 +54,9 @@ async function checkUserHasEthosProfile(userId: string): Promise<boolean> {
 // Function to assign a role to a Discord user
 async function assignRoleToUser(guildId: string, userId: string, roleId: string) {
   try {
-    const DISCORD_BOT_TOKEN = Deno.env.get("DISCORD_BOT_TOKEN");
-    if (!DISCORD_BOT_TOKEN) {
-      console.error("Missing Discord bot token!");
+    const DISCORD_TOKEN_VAL = Deno.env.get("DISCORD_TOKEN");
+    if (!DISCORD_TOKEN_VAL) {
+      console.error("Missing Discord token!");
       return { success: false, error: "Bot token not configured." };
     }
     
@@ -65,7 +65,7 @@ async function assignRoleToUser(guildId: string, userId: string, roleId: string)
     const response = await fetch(url, {
       method: "PUT",
       headers: {
-        "Authorization": `Bot ${DISCORD_BOT_TOKEN}`,
+        "Authorization": `Bot ${DISCORD_TOKEN_VAL}`,
         "Content-Type": "application/json"
       }
     });

@@ -2,12 +2,12 @@
 export {};
 
 // Get environment variables
-const DISCORD_BOT_TOKEN = Deno.env.get("DISCORD_BOT_TOKEN");
+const DISCORD_TOKEN_VAL = Deno.env.get("DISCORD_TOKEN");
 const ETHOS_VERIFIED_ROLE_ID = Deno.env.get("ETHOS_VERIFIED_ROLE_ID");
 
 // Check if required environment variables are set
-if (!DISCORD_BOT_TOKEN) {
-  console.error("Error: DISCORD_BOT_TOKEN environment variable is not set.");
+if (!DISCORD_TOKEN_VAL) {
+  console.error("Error: DISCORD_TOKEN environment variable is not set.");
   Deno.exit(1);
 }
 
@@ -32,7 +32,7 @@ async function checkBotPermissions(guildId: string) {
     // 1. First get the bot's own user info
     const botResponse = await fetch("https://discord.com/api/v10/users/@me", {
       headers: {
-        Authorization: `Bot ${DISCORD_BOT_TOKEN}`
+        Authorization: `Bot ${DISCORD_TOKEN_VAL}`
       }
     });
     
@@ -48,7 +48,7 @@ async function checkBotPermissions(guildId: string) {
     // 2. Check if the bot is in the guild
     const guildMemberResponse = await fetch(`https://discord.com/api/v10/guilds/${guildId}/members/${botInfo.id}`, {
       headers: {
-        Authorization: `Bot ${DISCORD_BOT_TOKEN}`
+        Authorization: `Bot ${DISCORD_TOKEN_VAL}`
       }
     });
     
@@ -64,7 +64,7 @@ async function checkBotPermissions(guildId: string) {
     // 3. Get guild roles
     const rolesResponse = await fetch(`https://discord.com/api/v10/guilds/${guildId}/roles`, {
       headers: {
-        Authorization: `Bot ${DISCORD_BOT_TOKEN}`
+        Authorization: `Bot ${DISCORD_TOKEN_VAL}`
       }
     });
     
