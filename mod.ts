@@ -369,8 +369,11 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
         // Get the Discord user information
         const userData = interaction.data.resolved?.users?.[userId];
         const username = userData?.username || "Unknown User";
+        // Use display name (global_name) if available, otherwise use username
+        const displayName = userData?.global_name || username;
         
         console.log("Discord username:", username);
+        console.log("Discord display name:", displayName);
         
         // Get user's Discord avatar URL if available
         let avatarUrl: string | undefined = undefined;
@@ -391,8 +394,8 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
           };
         }
 
-        // Display just the username in the title, without the Discord ID mention
-        const title = `Ethos profile for ${username}`;
+        // Display the display name in the title
+        const title = `Ethos profile for ${displayName}`;
         
         // Use the primary address for the profile URL if available, otherwise fall back to Discord
         let profileUrl;
@@ -408,7 +411,7 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
             embeds: [{
               title,
               url: profileUrl,
-              description: `${username} is considered **${getScoreLabel(profile.score)}**.`,
+              description: `${displayName} is considered **${getScoreLabel(profile.score)}**.`,
               color: getScoreColor(profile.score),
               thumbnail: {
                 // Use Discord avatar if available, otherwise use Ethos avatar or default
