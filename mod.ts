@@ -38,6 +38,22 @@ async function fetchEthosProfileByDiscord(userId: string) {
     // Use the Ethos API with the Discord ID - ensure proper format
     const userkey = `service:discord:${cleanUserId}`;
     
+    // First fetch the user's addresses to get their primary Ethereum address
+    const addressResponse = await fetch(`https://api.ethos.network/api/v1/addresses/${userkey}`);
+    const addressData = await addressResponse.json();
+    console.log("Address API Response:", JSON.stringify(addressData, null, 2));
+    
+    let primaryAddress = null;
+    if (addressData.ok && addressData.data?.primaryAddress) {
+      primaryAddress = addressData.data.primaryAddress;
+      // Check if it's the zero address (0x0000...)
+      if (primaryAddress === "0x0000000000000000000000000000000000000000") {
+        primaryAddress = null;
+      }
+    }
+    
+    console.log("Primary Address:", primaryAddress);
+    
     // Fetch profile score and user statistics using the API endpoint
     const [profileResponse, userStatsResponse, topReviewResponse] = await Promise.all([
       fetch(`https://api.ethos.network/api/v1/score/${userkey}`),
@@ -107,6 +123,7 @@ async function fetchEthosProfileByDiscord(userId: string) {
       avatar: scoreData.avatar || "https://cdn.discordapp.com/embed/avatars/0.png", // Default Discord avatar if none available
       name: scoreData.name || `Discord User ${cleanUserId}`,
       service: 'discord',
+      primaryAddress,
       elements: {
         accountAge: elements["Discord Account Age"]?.raw,
         ethAge: elements["Ethereum Address Age"]?.raw,
@@ -349,6 +366,12 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
 
         console.log("Discord user ID from interaction:", userId);
         
+        // Get the Discord user information
+        const userData = interaction.data.resolved?.users?.[userId];
+        const username = userData?.username || "Unknown User";
+        
+        console.log("Discord username:", username);
+        
         const profile = await fetchEthosProfileByDiscord(userId);
         
         if ("error" in profile) {
@@ -361,9 +384,16 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
           };
         }
 
-        // Display the user as a mention in the title
-        const title = `Ethos profile for <@${profile.userId}>`;
-        const profileUrl = `https://app.ethos.network/profile/discord/${profile.userId}?src=discord-agent`;
+        // Display the user by their username in the title, but still include the mention for Discord
+        const title = `Ethos profile for ${username} (<@${profile.userId}>)`;
+        
+        // Use the primary address for the profile URL if available, otherwise fall back to Discord
+        let profileUrl;
+        if (profile.primaryAddress) {
+          profileUrl = `https://app.ethos.network/profile/${profile.primaryAddress}?src=discord-agent`;
+        } else {
+          profileUrl = `https://app.ethos.network/profile/discord/${profile.userId}?src=discord-agent`;
+        }
 
         return {
           type: InteractionResponseType.ChannelMessageWithSource,
@@ -371,7 +401,7 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
             embeds: [{
               title,
               url: profileUrl,
-              description: `${profile.name} is considered **${getScoreLabel(profile.score)}**.`,
+              description: `${username} is considered **${getScoreLabel(profile.score)}**.`,
               color: getScoreColor(profile.score),
               thumbnail: {
                 url: profile.avatar

@@ -56,14 +56,15 @@ async function testEthosCommand() {
         name: "user", // Discord USER type option
         value: "123456789012345678" // This is the user ID that Discord passes
       }],
-      // In a real Discord interaction, this would include user information
+      // In a real Discord interaction, this is where user info would be included
       resolved: {
         users: {
           "123456789012345678": {
             id: "123456789012345678",
-            username: "testuser",
+            username: "TestUser",
             avatar: "abcdef123456",
-            discriminator: "0"
+            discriminator: "0",
+            global_name: "Test User"
           }
         }
       }
