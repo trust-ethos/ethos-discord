@@ -57,23 +57,57 @@ async function checkUserHasEthosProfile(userId: string): Promise<boolean> {
   }
 }
 
-// Function to assign a role to a Discord user
+// Add this utility function for Discord API calls with rate limit handling
+async function discordApiCall(url: string, options: RequestInit): Promise<Response> {
+  const DISCORD_TOKEN_VAL = Deno.env.get("DISCORD_TOKEN");
+  if (!DISCORD_TOKEN_VAL) {
+    throw new Error("Missing Discord token");
+  }
+
+  // Set up headers
+  const headers = {
+    "Authorization": `Bot ${DISCORD_TOKEN_VAL}`,
+    "Content-Type": "application/json",
+    ...(options.headers || {})
+  };
+
+  // Maximum number of retries
+  const MAX_RETRIES = 3;
+  let retries = 0;
+
+  while (retries < MAX_RETRIES) {
+    try {
+      const response = await fetch(url, {
+        ...options,
+        headers
+      });
+
+      // If rate limited, wait and retry
+      if (response.status === 429) {
+        const retryAfter = parseInt(response.headers.get("Retry-After") || "1");
+        console.log(`Rate limited. Waiting ${retryAfter}s before retrying...`);
+        await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+        retries++;
+        continue;
+      }
+
+      return response;
+    } catch (error) {
+      console.error("Error making Discord API call:", error);
+      throw error;
+    }
+  }
+
+  throw new Error(`Failed after ${MAX_RETRIES} retries due to rate limiting`);
+}
+
+// Update assignRoleToUser to use the new function
 async function assignRoleToUser(guildId: string, userId: string, roleId: string) {
   try {
-    const DISCORD_TOKEN_VAL = Deno.env.get("DISCORD_TOKEN");
-    if (!DISCORD_TOKEN_VAL) {
-      console.error("Missing Discord token!");
-      return { success: false, error: "Bot token not configured." };
-    }
-    
     const url = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${roleId}`;
     
-    const response = await fetch(url, {
-      method: "PUT",
-      headers: {
-        "Authorization": `Bot ${DISCORD_TOKEN_VAL}`,
-        "Content-Type": "application/json"
-      }
+    const response = await discordApiCall(url, {
+      method: "PUT"
     });
     
     if (!response.ok) {
@@ -424,7 +458,7 @@ function getRoleNameForScore(score: number): string {
   return "Untrusted";
 }
 
-// Function to remove all Ethos roles from a user
+// Function to remove all Ethos roles from a user more efficiently
 async function removeAllEthosRoles(guildId: string, userId: string): Promise<boolean> {
   const allRoles = [
     ETHOS_VERIFIED_ROLE_ID,
@@ -436,29 +470,50 @@ async function removeAllEthosRoles(guildId: string, userId: string): Promise<boo
   ];
   
   try {
-    const DISCORD_TOKEN_VAL = Deno.env.get("DISCORD_TOKEN");
-    if (!DISCORD_TOKEN_VAL) {
-      console.error("Missing Discord token!");
+    // First fetch user's current roles
+    const url = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}`;
+    
+    const response = await discordApiCall(url, {
+      method: "GET"
+    });
+    
+    if (!response.ok) {
+      console.error(`Failed to fetch user: ${response.status}`);
       return false;
     }
-
-    // Remove each role
-    for (const roleId of allRoles) {
-      try {
-        const url = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${roleId}`;
-        await fetch(url, {
-          method: "DELETE",
-          headers: {
-            "Authorization": `Bot ${DISCORD_TOKEN_VAL}`,
-            "Content-Type": "application/json"
-          }
-        });
-        // Don't check for success - role might not be assigned
-        // Just continue with next role
-      } catch (error) {
-        // Ignore errors - role might not exist or user might not have it
-        console.log(`Couldn't remove role ${roleId}: ${error}`);
+    
+    const userData = await response.json();
+    const userRoles = userData.roles || [];
+    
+    console.log(`User has ${userRoles.length} roles`);
+    
+    // Check which Ethos roles the user has
+    const rolesToRemove = allRoles.filter(roleId => userRoles.includes(roleId));
+    
+    console.log(`Found ${rolesToRemove.length} Ethos roles to remove`);
+    
+    // If user doesn't have any Ethos roles, skip removal
+    if (rolesToRemove.length === 0) {
+      console.log("User doesn't have any Ethos roles to remove");
+      return true;
+    }
+    
+    // Remove roles one by one, but with rate limit handling
+    for (const roleId of rolesToRemove) {
+      const removeUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${roleId}`;
+      const removeResponse = await discordApiCall(removeUrl, {
+        method: "DELETE"
+      });
+      
+      if (!removeResponse.ok) {
+        console.error(`Failed to remove role ${roleId}: ${removeResponse.status}`);
+        // Continue with other roles even if one fails
+      } else {
+        console.log(`Successfully removed role ${roleId}`);
       }
+      
+      // Add a small delay between requests to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 250));
     }
     
     return true;
