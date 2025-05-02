@@ -41,7 +41,7 @@ async function testEthosXCommand() {
   }
 }
 
-// Test the Discord bot with Discord handle
+// Test the Discord bot with Discord user mention
 async function testEthosCommand() {
   // Simulate a Discord interaction
   const interaction = {
@@ -53,13 +53,24 @@ async function testEthosCommand() {
     data: {
       name: "ethos",
       options: [{
-        name: "discord_handle",
-        value: "ethos#1234"  // Test with a Discord handle
-      }]
+        name: "user", // Discord USER type option
+        value: "123456789012345678" // This is the user ID that Discord passes
+      }],
+      // In a real Discord interaction, this would include user information
+      resolved: {
+        users: {
+          "123456789012345678": {
+            id: "123456789012345678",
+            username: "testuser",
+            avatar: "abcdef123456",
+            discriminator: "0"
+          }
+        }
+      }
     }
   };
 
-  console.log("\nTesting /ethos command with Discord handle 'ethos#1234'...");
+  console.log("\nTesting /ethos command with Discord user mention...");
 
   try {
     const response = await fetch("http://localhost:8000", {

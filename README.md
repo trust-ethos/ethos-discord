@@ -28,10 +28,9 @@ This will start the bot with the necessary permissions for network access and en
 
 The bot provides two slash commands for looking up Ethos profiles:
 
-- `/ethos [discord_handle]` - Look up Ethos profile for a Discord user
-  - Examples:
-    - `/ethos discord_user` - Look up Discord user
-    - `/ethos discord_user#1234` - Look up Discord user with discriminator
+- `/ethos @user` - Look up Ethos profile for a Discord user
+  - Simply mention a Discord user as a parameter
+  - Discord will provide a user selection interface
 
 - `/ethosx [twitter_handle]` - Look up Ethos profile for a Twitter user
   - Examples:

@@ -16,9 +16,9 @@ const commands = [
     description: "Look up Ethos profile for a Discord user",
     type: 1, // ChatInput
     options: [{
-      type: 3, // String
-      name: "discord_handle",
-      description: "Discord username to look up (with or without #)",
+      type: 6, // USER (Discord user mention)
+      name: "user",
+      description: "Discord user to look up",
       required: true
     }]
   },

@@ -26,30 +26,13 @@ function isDiscordHandle(handle: string): boolean {
   return !handle.startsWith('@') || handle.includes('#');
 }
 
-// Function to fetch Ethos profile by Discord handle
-async function fetchEthosProfileByDiscord(handle: string) {
+// Function to fetch Ethos profile by Discord user ID
+async function fetchEthosProfileByDiscord(userId: string) {
   try {
-    // Format handle for discord service
-    const formattedHandle = handle.replace('#', '');
+    console.log("Looking up Discord user with ID:", userId);
     
-    // Fetch Discord user info from Ethos API
-    const discordResponse = await fetch(`https://api.ethos.network/api/discord/user/?username=${formattedHandle}`);
-    if (!discordResponse.ok) {
-      if (discordResponse.status === 404) {
-        return { error: `Discord user '${formattedHandle}' not found` };
-      }
-      return { error: "Failed to fetch Discord info. Please try again later." };
-    }
-
-    const discordData = await discordResponse.json();
-    console.log("Discord API Response:", JSON.stringify(discordData, null, 2));
-
-    if (!discordData.ok || !discordData.data?.id) {
-      return { error: "Could not find Discord ID for this handle" };
-    }
-
-    const discordId = discordData.data.id;
-    const userkey = `service:discord:${discordId}`;
+    // Use the Ethos API with the Discord ID
+    const userkey = `service:discord:${userId}`;
     
     // Fetch profile score and user statistics using the API endpoint
     const [profileResponse, userStatsResponse, topReviewResponse] = await Promise.all([
@@ -79,7 +62,7 @@ async function fetchEthosProfileByDiscord(handle: string) {
     
     if (!profileResponse.ok) {
       if (profileResponse.status === 404) {
-        return { error: `No Ethos profile found for Discord user '${formattedHandle}'. They can create one at https://ethos.network` };
+        return { error: `No Ethos profile found for Discord user with ID '${userId}'. They can create one at https://ethos.network` };
       }
       return { error: "Failed to fetch profile. Please try again later." };
     }
@@ -115,10 +98,10 @@ async function fetchEthosProfileByDiscord(handle: string) {
 
     return {
       score: scoreData.score,
-      handle: formattedHandle,
-      discordId,
-      avatar: discordData.data.avatar,
-      name: discordData.data.name || formattedHandle,
+      handle: userId, // Use the user ID as the handle
+      userId,
+      avatar: scoreData.avatar || "https://cdn.discordapp.com/embed/avatars/0.png", // Default Discord avatar if none available
+      name: scoreData.name || `Discord User ${userId}`,
       service: 'discord',
       elements: {
         accountAge: elements["Discord Account Age"]?.raw,
@@ -348,18 +331,18 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
 
       // Handle ethos command (Discord profiles)
       if (commandName === "ethos") {
-        const discordHandle = interaction.data.options?.[0].value?.toString();
-        if (!discordHandle) {
+        const userId = interaction.data.options?.[0].value?.toString();
+        if (!userId) {
           return {
             type: InteractionResponseType.ChannelMessageWithSource,
             data: {
-              content: "Please provide a Discord username!",
+              content: "Please mention a Discord user!",
               flags: 64 // Ephemeral
             }
           };
         }
 
-        const profile = await fetchEthosProfileByDiscord(discordHandle);
+        const profile = await fetchEthosProfileByDiscord(userId);
         
         if ("error" in profile) {
           return {
@@ -371,8 +354,8 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
           };
         }
 
-        const title = `Ethos profile for Discord user '${profile.handle}'`;
-        const profileUrl = `https://app.ethos.network/profile/discord/${profile.handle}?src=discord-agent`;
+        const title = `Ethos profile for Discord user <@${profile.userId}>`;
+        const profileUrl = `https://app.ethos.network/profile/discord/${profile.userId}?src=discord-agent`;
 
         return {
           type: InteractionResponseType.ChannelMessageWithSource,
