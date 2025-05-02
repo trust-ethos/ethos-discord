@@ -93,10 +93,57 @@ async function testEthosCommand() {
   }
 }
 
+// Test the ethosVerify command 
+async function testEthosVerifyCommand() {
+  // Simulate a Discord interaction for a verification request
+  const interaction = {
+    type: 2, // ApplicationCommand
+    id: "test_interaction_id",
+    application_id: "test_app_id",
+    token: "test_token",
+    version: 1,
+    guild_id: "987654321098765432", // Server ID
+    member: {
+      user: {
+        id: "123456789012345678", // User ID of the person verifying
+        username: "TestUser",
+        avatar: "abcdef123456",
+        discriminator: "0",
+        global_name: "Dr. Test User"
+      }
+    },
+    data: {
+      name: "ethosVerify"
+      // No options needed for this command
+    }
+  };
+
+  console.log("\nTesting /ethosVerify command...");
+  console.log("User ID: 123456789012345678, Guild ID: 987654321098765432");
+
+  try {
+    const response = await fetch("http://localhost:8000", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(interaction)
+    });
+
+    const data = await response.json();
+    console.log("\nResponse Status:", response.status);
+    console.log("\nResponse Data:");
+    console.log(JSON.stringify(data, null, 2));
+  } catch (error) {
+    console.error("Error:", error);
+  }
+}
+
 // Run the tests
 async function runTests() {
   await testEthosCommand();
   await testEthosXCommand();
+  await testEthosVerifyCommand();
 }
 
 runTests(); 

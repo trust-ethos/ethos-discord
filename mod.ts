@@ -12,6 +12,8 @@ import {
 // Load environment variables
 const PUBLIC_KEY = Deno.env.get("DISCORD_PUBLIC_KEY");
 const APPLICATION_ID = Deno.env.get("DISCORD_APPLICATION_ID");
+// Hardcoded role ID for Ethos verified users
+const ETHOS_VERIFIED_ROLE_ID = Deno.env.get("ETHOS_VERIFIED_ROLE_ID") || "1234567890123456789"; // Replace with actual role ID in production
 
 if (!PUBLIC_KEY || !APPLICATION_ID) {
   console.error("Environment variables check failed:");
@@ -24,6 +26,67 @@ if (!PUBLIC_KEY || !APPLICATION_ID) {
 function isDiscordHandle(handle: string): boolean {
   // Discord handles typically don't start with @ and may contain a #
   return !handle.startsWith('@') || handle.includes('#');
+}
+
+// Function to check if a Discord user has an Ethos profile
+async function checkUserHasEthosProfile(userId: string): Promise<boolean> {
+  try {
+    console.log("Checking if Discord user with ID has an Ethos profile:", userId);
+    
+    // Make sure we're just using the raw ID without any @ symbol
+    const cleanUserId = userId.replace('@', '').replace('<', '').replace('>', '');
+    console.log("Clean User ID:", cleanUserId);
+    
+    // Use the Ethos API with the Discord ID - ensure proper format
+    const userkey = `service:discord:${cleanUserId}`;
+    
+    // First fetch the user's addresses to see if they have an Ethos profile
+    const profileResponse = await fetch(`https://api.ethos.network/api/v1/score/${userkey}`);
+    
+    // If we get a 200 OK response, the user has a profile
+    return profileResponse.ok;
+  } catch (error) {
+    console.error("Error checking if user has Ethos profile:", error);
+    return false;
+  }
+}
+
+// Function to assign a role to a Discord user
+async function assignRoleToUser(guildId: string, userId: string, roleId: string) {
+  try {
+    const DISCORD_BOT_TOKEN = Deno.env.get("DISCORD_BOT_TOKEN");
+    if (!DISCORD_BOT_TOKEN) {
+      console.error("Missing Discord bot token!");
+      return { success: false, error: "Bot token not configured." };
+    }
+    
+    const url = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${roleId}`;
+    
+    const response = await fetch(url, {
+      method: "PUT",
+      headers: {
+        "Authorization": `Bot ${DISCORD_BOT_TOKEN}`,
+        "Content-Type": "application/json"
+      }
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.text();
+      console.error(`Failed to assign role: ${response.status} ${errorData}`);
+      return { 
+        success: false, 
+        error: `Failed to assign role: ${response.status}` 
+      };
+    }
+    
+    return { success: true };
+  } catch (error) {
+    console.error("Error assigning role:", error);
+    return { 
+      success: false, 
+      error: `Error assigning role: ${error}` 
+    };
+  }
 }
 
 // Function to fetch Ethos profile by Discord user ID
@@ -350,8 +413,69 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
     case InteractionType.ApplicationCommand: {
       const commandName = interaction.data?.name;
 
+      // Handle ethosVerify command (verify user and assign role)
+      if (commandName === "ethosVerify") {
+        // Get the user's ID directly from the interaction
+        const userId = interaction.member?.user?.id;
+        const guildId = interaction.guild_id;
+        
+        if (!userId) {
+          return {
+            type: InteractionResponseType.ChannelMessageWithSource,
+            data: {
+              content: "Unable to identify your Discord account. Please try again.",
+              flags: 64 // Ephemeral message (only visible to the user)
+            }
+          };
+        }
+        
+        if (!guildId) {
+          return {
+            type: InteractionResponseType.ChannelMessageWithSource,
+            data: {
+              content: "This command can only be used in a server.",
+              flags: 64 // Ephemeral message
+            }
+          };
+        }
+        
+        // Check if the user has an Ethos profile
+        const hasProfile = await checkUserHasEthosProfile(userId);
+        
+        if (!hasProfile) {
+          return {
+            type: InteractionResponseType.ChannelMessageWithSource,
+            data: {
+              content: "You don't have an Ethos profile yet. Please create one at https://app.ethos.network",
+              flags: 64 // Ephemeral message
+            }
+          };
+        }
+        
+        // Assign the role to the user
+        const result = await assignRoleToUser(guildId, userId, ETHOS_VERIFIED_ROLE_ID);
+        
+        if (!result.success) {
+          return {
+            type: InteractionResponseType.ChannelMessageWithSource,
+            data: {
+              content: `Verification failed: ${result.error}`,
+              flags: 64 // Ephemeral message
+            }
+          };
+        }
+        
+        return {
+          type: InteractionResponseType.ChannelMessageWithSource,
+          data: {
+            content: "✅ Verification successful! You've been assigned the Ethos verified role.",
+            flags: 64 // Ephemeral message
+          }
+        };
+      }
+      
       // Handle ethos command (Discord profiles)
-      if (commandName === "ethos") {
+      else if (commandName === "ethos") {
         // With a User type option, Discord will automatically provide the user ID
         const userId = interaction.data.options?.[0].value?.toString();
         if (!userId) {

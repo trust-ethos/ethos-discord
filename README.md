@@ -10,10 +10,14 @@ A Discord bot that fetches and displays Ethos profile information for Twitter an
    # On macOS/Linux
    export DISCORD_TOKEN=your_discord_bot_token
    export ETHOS_API_KEY=your_ethos_api_key
+   # If using role assignment feature
+   export ETHOS_VERIFIED_ROLE_ID=your_discord_role_id
 
    # On Windows
    set DISCORD_TOKEN=your_discord_bot_token
    set ETHOS_API_KEY=your_ethos_api_key
+   # If using role assignment feature
+   set ETHOS_VERIFIED_ROLE_ID=your_discord_role_id
    ```
 
 ## Running the Bot
@@ -26,7 +30,7 @@ This will start the bot with the necessary permissions for network access and en
 
 ## Usage
 
-The bot provides two slash commands for looking up Ethos profiles:
+The bot provides the following slash commands:
 
 - `/ethos @user` - Look up Ethos profile for a Discord user
   - Simply mention a Discord user as a parameter
@@ -39,6 +43,12 @@ The bot provides two slash commands for looking up Ethos profiles:
   - Examples:
     - `/ethosx vitalik` - Look up Twitter user @vitalik
     - `/ethosx @vitalik` - Look up Twitter user @vitalik
+
+- `/ethosVerify` - Verify that you have an Ethos profile and get assigned a role
+  - No parameters needed - uses your own Discord account
+  - Checks if you have an Ethos profile
+  - If verified, assigns you the configured role in the server
+  - Responds with a confirmation only visible to you
 
 ## Development
 

@@ -32,6 +32,12 @@ const commands = [
       description: "Twitter handle to look up (with or without @)",
       required: true
     }]
+  },
+  {
+    name: "ethosVerify",
+    description: "Verify and assign a role if you have an Ethos profile",
+    type: 1, // ChatInput
+    options: [] // No options needed as it will use the user's own Discord ID
   }
 ];
 
