@@ -13,13 +13,13 @@ import {
 const PUBLIC_KEY = Deno.env.get("DISCORD_PUBLIC_KEY");
 const APPLICATION_ID = Deno.env.get("DISCORD_APPLICATION_ID");
 // Hardcoded role ID for Ethos verified users
-const ETHOS_VERIFIED_ROLE_ID = Deno.env.get("ETHOS_VERIFIED_ROLE_ID") || "1234567890123456789"; // Replace with actual role ID in production
+const ETHOS_VERIFIED_ROLE_ID = Deno.env.get("ETHOS_VERIFIED_ROLE_ID") || "1367923031040721046"; // Replace with actual role ID in production
 // Score-based role IDs
-const ETHOS_ROLE_EXEMPLARY = Deno.env.get("ETHOS_ROLE_EXEMPLARY") || "1234567890123456780"; // Score >= 2000
-const ETHOS_ROLE_REPUTABLE = Deno.env.get("ETHOS_ROLE_REPUTABLE") || "1234567890123456781"; // Score >= 1600
-const ETHOS_ROLE_NEUTRAL = Deno.env.get("ETHOS_ROLE_NEUTRAL") || "1234567890123456782"; // Score >= 1200
-const ETHOS_ROLE_QUESTIONABLE = Deno.env.get("ETHOS_ROLE_QUESTIONABLE") || "1234567890123456783"; // Score >= 800
-const ETHOS_ROLE_UNTRUSTED = Deno.env.get("ETHOS_ROLE_UNTRUSTED") || "1234567890123456784"; // Score < 800
+const ETHOS_ROLE_EXEMPLARY = Deno.env.get("ETHOS_ROLE_EXEMPLARY") || "1253205892917231677"; // Score >= 2000
+const ETHOS_ROLE_REPUTABLE = Deno.env.get("ETHOS_ROLE_REPUTABLE") || "1253206005169258537"; // Score >= 1600
+const ETHOS_ROLE_NEUTRAL = Deno.env.get("ETHOS_ROLE_NEUTRAL") || "1253206143182831637"; // Score >= 1200
+const ETHOS_ROLE_QUESTIONABLE = Deno.env.get("ETHOS_ROLE_QUESTIONABLE") || "1253206252306305024"; // Score >= 800
+const ETHOS_ROLE_UNTRUSTED = Deno.env.get("ETHOS_ROLE_UNTRUSTED") || "1253206385877975043"; // Score < 800
 
 if (!PUBLIC_KEY || !APPLICATION_ID) {
   console.error("Environment variables check failed:");
