@@ -14,6 +14,12 @@ const PUBLIC_KEY = Deno.env.get("DISCORD_PUBLIC_KEY");
 const APPLICATION_ID = Deno.env.get("DISCORD_APPLICATION_ID");
 // Hardcoded role ID for Ethos verified users
 const ETHOS_VERIFIED_ROLE_ID = Deno.env.get("ETHOS_VERIFIED_ROLE_ID") || "1234567890123456789"; // Replace with actual role ID in production
+// Score-based role IDs
+const ETHOS_ROLE_EXEMPLARY = Deno.env.get("ETHOS_ROLE_EXEMPLARY") || "1234567890123456780"; // Score >= 2000
+const ETHOS_ROLE_REPUTABLE = Deno.env.get("ETHOS_ROLE_REPUTABLE") || "1234567890123456781"; // Score >= 1600
+const ETHOS_ROLE_NEUTRAL = Deno.env.get("ETHOS_ROLE_NEUTRAL") || "1234567890123456782"; // Score >= 1200
+const ETHOS_ROLE_QUESTIONABLE = Deno.env.get("ETHOS_ROLE_QUESTIONABLE") || "1234567890123456783"; // Score >= 800
+const ETHOS_ROLE_UNTRUSTED = Deno.env.get("ETHOS_ROLE_UNTRUSTED") || "1234567890123456784"; // Score < 800
 
 if (!PUBLIC_KEY || !APPLICATION_ID) {
   console.error("Environment variables check failed:");
@@ -400,6 +406,59 @@ async function verifyRequest(request: Request): Promise<APIInteraction | null> {
   }
 }
 
+// Function to get role ID based on score
+function getRoleIdForScore(score: number): string {
+  if (score >= 2000) return ETHOS_ROLE_EXEMPLARY;
+  if (score >= 1600) return ETHOS_ROLE_REPUTABLE;
+  if (score >= 1200) return ETHOS_ROLE_NEUTRAL;
+  if (score >= 800) return ETHOS_ROLE_QUESTIONABLE;
+  return ETHOS_ROLE_UNTRUSTED;
+}
+
+// Function to remove all Ethos roles from a user
+async function removeAllEthosRoles(guildId: string, userId: string): Promise<boolean> {
+  const allRoles = [
+    ETHOS_VERIFIED_ROLE_ID,
+    ETHOS_ROLE_EXEMPLARY,
+    ETHOS_ROLE_REPUTABLE,
+    ETHOS_ROLE_NEUTRAL,
+    ETHOS_ROLE_QUESTIONABLE,
+    ETHOS_ROLE_UNTRUSTED
+  ];
+  
+  try {
+    const DISCORD_TOKEN_VAL = Deno.env.get("DISCORD_TOKEN");
+    if (!DISCORD_TOKEN_VAL) {
+      console.error("Missing Discord token!");
+      return false;
+    }
+
+    // Remove each role
+    for (const roleId of allRoles) {
+      try {
+        const url = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${roleId}`;
+        await fetch(url, {
+          method: "DELETE",
+          headers: {
+            "Authorization": `Bot ${DISCORD_TOKEN_VAL}`,
+            "Content-Type": "application/json"
+          }
+        });
+        // Don't check for success - role might not be assigned
+        // Just continue with next role
+      } catch (error) {
+        // Ignore errors - role might not exist or user might not have it
+        console.log(`Couldn't remove role ${roleId}: ${error}`);
+      }
+    }
+    
+    return true;
+  } catch (error) {
+    console.error("Error removing roles:", error);
+    return false;
+  }
+}
+
 // Handle Discord interactions
 async function handleInteraction(interaction: APIInteraction): Promise<APIInteractionResponse> {
   switch (interaction.type) {
@@ -413,7 +472,7 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
     case InteractionType.ApplicationCommand: {
       const commandName = interaction.data?.name;
 
-      // Handle ethosVerify command (verify user and assign role)
+      // Handle ethos_verify command (verify user and assign role)
       if (commandName === "ethos_verify") {
         // Get the user's ID directly from the interaction
         const userId = interaction.member?.user?.id;
@@ -439,36 +498,61 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
           };
         }
         
-        // Check if the user has an Ethos profile
-        const hasProfile = await checkUserHasEthosProfile(userId);
-        
-        if (!hasProfile) {
+        // First, remove any existing Ethos roles
+        const rolesRemoved = await removeAllEthosRoles(guildId, userId);
+        if (!rolesRemoved) {
           return {
             type: InteractionResponseType.ChannelMessageWithSource,
             data: {
-              content: "You don't have an Ethos profile yet. Please create one at https://app.ethos.network",
+              content: "Failed to update roles. Please try again later.",
               flags: 64 // Ephemeral message
             }
           };
         }
         
-        // Assign the role to the user
-        const result = await assignRoleToUser(guildId, userId, ETHOS_VERIFIED_ROLE_ID);
+        // Get user profile to check score
+        const profile = await fetchEthosProfileByDiscord(userId);
         
-        if (!result.success) {
+        if ("error" in profile) {
           return {
             type: InteractionResponseType.ChannelMessageWithSource,
             data: {
-              content: `Verification failed: ${result.error}`,
+              content: profile.error,
               flags: 64 // Ephemeral message
             }
           };
+        }
+        
+        // Assign the verified role
+        const verifiedResult = await assignRoleToUser(guildId, userId, ETHOS_VERIFIED_ROLE_ID);
+        
+        if (!verifiedResult.success) {
+          return {
+            type: InteractionResponseType.ChannelMessageWithSource,
+            data: {
+              content: `Verification failed: ${verifiedResult.error}`,
+              flags: 64 // Ephemeral message
+            }
+          };
+        }
+        
+        // Assign score-based role
+        const scoreRoleId = getRoleIdForScore(profile.score);
+        const scoreResult = await assignRoleToUser(guildId, userId, scoreRoleId);
+        
+        // Create response message
+        let responseMessage = "✅ Verification successful! ";
+        
+        if (scoreResult.success) {
+          responseMessage += `You've been assigned the ${getScoreLabel(profile.score)} role with a score of ${profile.score}.`;
+        } else {
+          responseMessage += `You've been verified but there was an error assigning your score role: ${scoreResult.error}`;
         }
         
         return {
           type: InteractionResponseType.ChannelMessageWithSource,
           data: {
-            content: "✅ Verification successful! You've been assigned the Ethos verified role.",
+            content: responseMessage,
             flags: 64 // Ephemeral message
           }
         };

@@ -10,14 +10,30 @@ A Discord bot that fetches and displays Ethos profile information for Twitter an
    # On macOS/Linux
    export DISCORD_TOKEN=your_discord_bot_token
    export ETHOS_API_KEY=your_ethos_api_key
-   # If using role assignment feature
-   export ETHOS_VERIFIED_ROLE_ID=your_discord_role_id
+   
+   # For role assignment feature
+   export ETHOS_VERIFIED_ROLE_ID=your_verified_role_id
+   
+   # Score-based roles (optional)
+   export ETHOS_ROLE_EXEMPLARY=your_exemplary_role_id     # Score >= 2000
+   export ETHOS_ROLE_REPUTABLE=your_reputable_role_id     # Score >= 1600
+   export ETHOS_ROLE_NEUTRAL=your_neutral_role_id         # Score >= 1200
+   export ETHOS_ROLE_QUESTIONABLE=your_questionable_role_id # Score >= 800
+   export ETHOS_ROLE_UNTRUSTED=your_untrusted_role_id     # Score < 800
 
    # On Windows
    set DISCORD_TOKEN=your_discord_bot_token
    set ETHOS_API_KEY=your_ethos_api_key
-   # If using role assignment feature
-   set ETHOS_VERIFIED_ROLE_ID=your_discord_role_id
+   
+   # For role assignment feature
+   set ETHOS_VERIFIED_ROLE_ID=your_verified_role_id
+   
+   # Score-based roles (optional)
+   set ETHOS_ROLE_EXEMPLARY=your_exemplary_role_id     # Score >= 2000
+   set ETHOS_ROLE_REPUTABLE=your_reputable_role_id     # Score >= 1600
+   set ETHOS_ROLE_NEUTRAL=your_neutral_role_id         # Score >= 1200
+   set ETHOS_ROLE_QUESTIONABLE=your_questionable_role_id # Score >= 800
+   set ETHOS_ROLE_UNTRUSTED=your_untrusted_role_id     # Score < 800
    ```
 
 ## Running the Bot
@@ -44,12 +60,26 @@ The bot provides the following slash commands:
     - `/ethosx vitalik` - Look up Twitter user @vitalik
     - `/ethosx @vitalik` - Look up Twitter user @vitalik
 
-- `/ethos_verify` - Verify that you have an Ethos profile and get assigned a role
+- `/ethos_verify` - Verify that you have an Ethos profile and get assigned roles
   - No parameters needed - uses your own Discord account
   - Checks if you have an Ethos profile
-  - If verified, assigns you the configured role in the server
+  - Assigns two roles if verified:
+    1. A verified user role (using `ETHOS_VERIFIED_ROLE_ID`)
+    2. A score-based role that reflects your Ethos score level
   - Responds with a confirmation only visible to you
-  - Requires the `DISCORD_TOKEN` and `ETHOS_VERIFIED_ROLE_ID` environment variables
+  - If you run it again, your roles will be updated based on your current score
+
+## Score-Based Roles
+
+The bot assigns roles based on the following Ethos score brackets:
+
+| Role Name | Score Range | Environment Variable |
+|-----------|-------------|---------------------|
+| Exemplary | ≥ 2000 | ETHOS_ROLE_EXEMPLARY |
+| Reputable | 1600-1999 | ETHOS_ROLE_REPUTABLE |
+| Neutral | 1200-1599 | ETHOS_ROLE_NEUTRAL |
+| Questionable | 800-1199 | ETHOS_ROLE_QUESTIONABLE |
+| Untrusted | < 800 | ETHOS_ROLE_UNTRUSTED |
 
 ## Development
 

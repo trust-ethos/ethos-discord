@@ -93,7 +93,7 @@ async function testEthosCommand() {
   }
 }
 
-// Test the ethosVerify command 
+// Test the ethos_verify command 
 async function testEthosVerifyCommand() {
   // Simulate a Discord interaction for a verification request
   const interaction = {
@@ -118,8 +118,13 @@ async function testEthosVerifyCommand() {
     }
   };
 
-  console.log("\nTesting /ethos_verify command...");
-  console.log("User ID: 123456789012345678, Guild ID: 987654321098765432");
+  console.log("\nTesting /ethos_verify command with score-based role assignment...");
+  console.log(`Guild ID: ${interaction.guild_id}, User ID: ${interaction.member.user.id}`);
+  console.log("This will:");
+  console.log("1. Remove any existing Ethos roles");
+  console.log("2. Fetch the user's Ethos profile");
+  console.log("3. Assign the verified role");
+  console.log("4. Assign a score-based role depending on their score");
 
   try {
     const response = await fetch("http://localhost:8000", {
@@ -130,10 +135,15 @@ async function testEthosVerifyCommand() {
       body: JSON.stringify(interaction)
     });
 
-    const data = await response.json();
     console.log("\nResponse Status:", response.status);
-    console.log("\nResponse Data:");
-    console.log(JSON.stringify(data, null, 2));
+    
+    if (response.ok) {
+      const data = await response.json();
+      console.log("\nResponse Data:");
+      console.log(JSON.stringify(data, null, 2));
+    } else {
+      console.log("Error response:", await response.text());
+    }
   } catch (error) {
     console.error("Error:", error);
   }
