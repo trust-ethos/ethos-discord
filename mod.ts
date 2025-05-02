@@ -185,7 +185,7 @@ async function fetchEthosProfileByDiscord(userId: string, discordAvatarUrl?: str
     
     if (!profileResponse.ok) {
       if (profileResponse.status === 404) {
-        return { error: `No Ethos profile found for Discord user with ID '${cleanUserId}'. They can create one at https://ethos.network` };
+        return { error: `No Ethos profile found for Discord user with ID '${cleanUserId}'. They either don't have a profile or haven't connected Discord to their Ethos account.` };
       }
       return { error: "Failed to fetch profile. Please try again later." };
     }
@@ -302,7 +302,7 @@ async function fetchEthosProfileByTwitter(handle: string) {
     
     if (!profileResponse.ok) {
       if (profileResponse.status === 404) {
-        return { error: `No Ethos profile found for @${formattedHandle}. They can create one at https://ethos.network` };
+        return { error: `No Ethos profile found for @${formattedHandle}.` };
       }
       return { error: "Failed to fetch profile. Please try again later." };
     }
@@ -588,6 +588,30 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
         }
         
         console.log(`User ${userId} has Ethos score: ${profile.score}`);
+        
+        // Check if the user has an actual Ethos profile (not just a default value)
+        // Users without profiles should not be assigned roles
+        // We'll consider a profile valid only if it has a score and some interactions
+        // like reviews, vouches, or a claimed wallet address
+        const hasInteractions = 
+          (profile.elements?.totalReviews > 0) || 
+          (profile.elements?.vouchCount > 0) || 
+          profile.primaryAddress;
+          
+        // Check for exactly 1200 score with no interactions, which appears to be a default value
+        const isDefaultProfile = profile.score === 1200 && !hasInteractions;
+          
+        if (profile.score === undefined || typeof profile.score !== 'number' || !hasInteractions || isDefaultProfile) {
+          console.log(`User ${userId} has default/empty profile: score=${profile.score}, reviews=${profile.elements?.totalReviews}, vouches=${profile.elements?.vouchCount}, wallet=${profile.primaryAddress ? 'yes' : 'no'}`);
+          
+          return {
+            type: InteractionResponseType.ChannelMessageWithSource,
+            data: {
+              content: "You either don't have a claimed Ethos profile or haven't connected Discord to your Ethos account yet. If you have a profile, please connect Discord at https://app.ethos.network/profile/settings?tab=social",
+              flags: 64 // Ephemeral message
+            }
+          };
+        }
         
         // Assign the verified role
         const verifiedResult = await assignRoleToUser(guildId, userId, ETHOS_VERIFIED_ROLE_ID);
