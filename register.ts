@@ -41,10 +41,15 @@ const commands = [
   }
 ];
 
-console.log("Registering slash commands...");
+console.log("Registering global slash commands...");
+
+// Use global command registration endpoint
+const endpoint = `https://discord.com/api/v10/applications/${APPLICATION_ID}/commands`;
+
+console.log(`Registering to endpoint: ${endpoint}`);
 
 const response = await fetch(
-  `https://discord.com/api/v10/applications/${APPLICATION_ID}/commands`,
+  endpoint,
   {
     method: "PUT", // Use PUT to replace all commands
     headers: {
@@ -57,6 +62,11 @@ const response = await fetch(
 
 if (response.ok) {
   console.log("Slash commands registered successfully!");
+  const responseData = await response.json();
+  console.log(`Registered ${responseData.length} commands:`);
+  responseData.forEach((cmd: any) => {
+    console.log(`- /${cmd.name}`);
+  });
 } else {
   const error = await response.text();
   console.error("Failed to register slash commands:", error);

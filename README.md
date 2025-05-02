@@ -9,12 +9,14 @@ A Discord bot that fetches and displays Ethos profile information for Twitter an
    ```bash
    # On macOS/Linux
    export DISCORD_TOKEN=your_discord_bot_token
+   export DISCORD_BOT_TOKEN=your_discord_bot_token  # Same as DISCORD_TOKEN, needed for role assignment
    export ETHOS_API_KEY=your_ethos_api_key
    # If using role assignment feature
    export ETHOS_VERIFIED_ROLE_ID=your_discord_role_id
 
    # On Windows
    set DISCORD_TOKEN=your_discord_bot_token
+   set DISCORD_BOT_TOKEN=your_discord_bot_token  # Same as DISCORD_TOKEN, needed for role assignment
    set ETHOS_API_KEY=your_ethos_api_key
    # If using role assignment feature
    set ETHOS_VERIFIED_ROLE_ID=your_discord_role_id
@@ -49,6 +51,7 @@ The bot provides the following slash commands:
   - Checks if you have an Ethos profile
   - If verified, assigns you the configured role in the server
   - Responds with a confirmation only visible to you
+  - Requires the `DISCORD_BOT_TOKEN` and `ETHOS_VERIFIED_ROLE_ID` environment variables
 
 ## Development
 
