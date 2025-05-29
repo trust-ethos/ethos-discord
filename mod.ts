@@ -12,8 +12,8 @@ import {
 // Load environment variables
 const PUBLIC_KEY = Deno.env.get("DISCORD_PUBLIC_KEY");
 const APPLICATION_ID = Deno.env.get("DISCORD_APPLICATION_ID");
-// Hardcoded role ID for Ethos verified users
-const ETHOS_VERIFIED_ROLE_ID = Deno.env.get("ETHOS_VERIFIED_ROLE_ID") || "1367923031040721046"; // Replace with actual role ID in production
+// Hardcoded role IDs
+const ETHOS_VERIFIED_ROLE_ID = "1330927513056186501"; // "verified" role
 // Validator role ID
 const ETHOS_VALIDATOR_ROLE_ID = "1377477396759842936";
 // Score-based role IDs
@@ -873,6 +873,37 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
         };
       }
       
+      // Handle ethos_sync command (manual role synchronization)
+      else if (commandName === "ethos_sync") {
+        const guildId = interaction.guild_id;
+        
+        if (!guildId) {
+          return {
+            type: InteractionResponseType.ChannelMessageWithSource,
+            data: {
+              content: "This command can only be used in a server.",
+              flags: 64 // Ephemeral message
+            }
+          };
+        }
+        
+        // Check if user has permission to run sync (you might want to add permission checks here)
+        // For now, we'll allow anyone to trigger a sync
+        
+        // Start the sync asynchronously and respond immediately
+        performManualSync(guildId).catch(error => {
+          console.error("Error in manual sync:", error);
+        });
+        
+        return {
+          type: InteractionResponseType.ChannelMessageWithSource,
+          data: {
+            content: "🔄 Manual role synchronization started! This may take a few minutes. Check the logs for progress.",
+            flags: 64 // Ephemeral message
+          }
+        };
+      }
+      
       // Unknown command
       else {
         return {
@@ -932,4 +963,271 @@ serve(async (req) => {
   }
 
   return new Response("OK", { status: 200 });
-}); 
+});
+
+// ===== AUTOMATED ROLE SYNCHRONIZATION =====
+
+// Function to get all verified members from a guild
+async function getVerifiedMembers(guildId: string): Promise<string[]> {
+  try {
+    console.log("Fetching verified members from guild:", guildId);
+    
+    // Get all members with the verified role
+    const url = `https://discord.com/api/v10/guilds/${guildId}/members?limit=1000`;
+    
+    const response = await discordApiCall(url, {
+      method: "GET"
+    });
+    
+    if (!response.ok) {
+      console.error(`Failed to fetch guild members: ${response.status}`);
+      return [];
+    }
+    
+    const members = await response.json();
+    
+    // Filter members who have the verified role
+    const verifiedMembers = members
+      .filter((member: any) => member.roles.includes(ETHOS_VERIFIED_ROLE_ID))
+      .map((member: any) => member.user.id);
+    
+    console.log(`Found ${verifiedMembers.length} verified members`);
+    return verifiedMembers;
+  } catch (error) {
+    console.error("Error fetching verified members:", error);
+    return [];
+  }
+}
+
+// Function to get current Ethos roles for a user
+function getCurrentEthosRoles(userRoles: string[]): string[] {
+  const ethosRoles = [
+    ETHOS_VERIFIED_ROLE_ID,
+    ETHOS_VALIDATOR_ROLE_ID,
+    ETHOS_ROLE_EXEMPLARY,
+    ETHOS_ROLE_REPUTABLE,
+    ETHOS_ROLE_NEUTRAL,
+    ETHOS_ROLE_QUESTIONABLE,
+    ETHOS_ROLE_UNTRUSTED
+  ];
+  
+  return userRoles.filter(roleId => ethosRoles.includes(roleId));
+}
+
+// Function to get expected roles based on Ethos profile
+function getExpectedRoles(score: number, hasValidator: boolean): string[] {
+  const expectedRoles = [ETHOS_VERIFIED_ROLE_ID]; // Always has verified role
+  
+  // Add score-based role
+  expectedRoles.push(getRoleIdForScore(score));
+  
+  // Add validator role if they own a validator
+  if (hasValidator) {
+    expectedRoles.push(ETHOS_VALIDATOR_ROLE_ID);
+  }
+  
+  return expectedRoles;
+}
+
+// Function to sync a single user's roles
+async function syncUserRoles(guildId: string, userId: string): Promise<{ success: boolean; changes: string[] }> {
+  try {
+    console.log(`Syncing roles for user: ${userId}`);
+    
+    // Get user's current Discord roles
+    const memberUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}`;
+    const memberResponse = await discordApiCall(memberUrl, { method: "GET" });
+    
+    if (!memberResponse.ok) {
+      console.error(`Failed to fetch member ${userId}: ${memberResponse.status}`);
+      return { success: false, changes: [] };
+    }
+    
+    const memberData = await memberResponse.json();
+    const currentRoles = memberData.roles || [];
+    const currentEthosRoles = getCurrentEthosRoles(currentRoles);
+    
+    // Fetch user's Ethos profile
+    const profile = await fetchEthosProfileByDiscord(userId);
+    
+    if ("error" in profile) {
+      console.log(`User ${userId} has no valid Ethos profile, skipping sync`);
+      return { success: true, changes: [] };
+    }
+    
+    // Check validator status
+    const hasValidator = await checkUserOwnsValidator(userId);
+    
+    // Get expected roles
+    const expectedRoles = getExpectedRoles(profile.score, hasValidator);
+    
+    // Compare current vs expected roles
+    const rolesToAdd = expectedRoles.filter(roleId => !currentRoles.includes(roleId));
+    const rolesToRemove = currentEthosRoles.filter(roleId => !expectedRoles.includes(roleId));
+    
+    const changes: string[] = [];
+    
+    // Remove roles that shouldn't be there
+    for (const roleId of rolesToRemove) {
+      const removeUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${roleId}`;
+      const removeResponse = await discordApiCall(removeUrl, { method: "DELETE" });
+      
+      if (removeResponse.ok) {
+        const roleName = getRoleNameFromId(roleId);
+        changes.push(`Removed ${roleName} role`);
+        console.log(`Removed role ${roleName} from user ${userId}`);
+      }
+      
+      // Small delay to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    
+    // Add roles that should be there
+    for (const roleId of rolesToAdd) {
+      const addUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${roleId}`;
+      const addResponse = await discordApiCall(addUrl, { method: "PUT" });
+      
+      if (addResponse.ok) {
+        const roleName = getRoleNameFromId(roleId);
+        changes.push(`Added ${roleName} role`);
+        console.log(`Added role ${roleName} to user ${userId}`);
+      }
+      
+      // Small delay to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    
+    return { success: true, changes };
+  } catch (error) {
+    console.error(`Error syncing user ${userId}:`, error);
+    return { success: false, changes: [] };
+  }
+}
+
+// Helper function to get role name from role ID
+function getRoleNameFromId(roleId: string): string {
+  switch (roleId) {
+    case ETHOS_VERIFIED_ROLE_ID: return "Verified";
+    case ETHOS_VALIDATOR_ROLE_ID: return "Validator";
+    case ETHOS_ROLE_EXEMPLARY: return "Exemplary";
+    case ETHOS_ROLE_REPUTABLE: return "Reputable";
+    case ETHOS_ROLE_NEUTRAL: return "Neutral";
+    case ETHOS_ROLE_QUESTIONABLE: return "Questionable";
+    case ETHOS_ROLE_UNTRUSTED: return "Untrusted";
+    default: return "Unknown";
+  }
+}
+
+// Main daily sync function
+async function performDailySync(): Promise<void> {
+  const GUILD_ID = Deno.env.get("DISCORD_GUILD_ID");
+  
+  if (!GUILD_ID) {
+    console.error("DISCORD_GUILD_ID environment variable not set, skipping sync");
+    return;
+  }
+  
+  await performSyncForGuild(GUILD_ID);
+}
+
+// Manual sync function that can be triggered by command
+async function performManualSync(guildId: string): Promise<void> {
+  console.log(`=== Starting manual role synchronization for guild ${guildId} ===`);
+  await performSyncForGuild(guildId);
+}
+
+// Core sync logic that can be used by both daily and manual sync
+async function performSyncForGuild(guildId: string): Promise<void> {
+  console.log("=== Starting role synchronization ===");
+  const startTime = Date.now();
+  
+  try {
+    // Get all verified members
+    const verifiedMembers = await getVerifiedMembers(guildId);
+    
+    if (verifiedMembers.length === 0) {
+      console.log("No verified members found, sync complete");
+      return;
+    }
+    
+    console.log(`Starting sync for ${verifiedMembers.length} verified members`);
+    
+    let successCount = 0;
+    let errorCount = 0;
+    let totalChanges = 0;
+    
+    // Process users in batches to avoid overwhelming the API
+    const BATCH_SIZE = 10;
+    for (let i = 0; i < verifiedMembers.length; i += BATCH_SIZE) {
+      const batch = verifiedMembers.slice(i, i + BATCH_SIZE);
+      
+      console.log(`Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(verifiedMembers.length / BATCH_SIZE)}`);
+      
+      for (const userId of batch) {
+        const result = await syncUserRoles(guildId, userId);
+        
+        if (result.success) {
+          successCount++;
+          totalChanges += result.changes.length;
+          
+          if (result.changes.length > 0) {
+            console.log(`User ${userId}: ${result.changes.join(", ")}`);
+          }
+        } else {
+          errorCount++;
+        }
+        
+        // Delay between users to respect rate limits
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      
+      // Longer delay between batches
+      await new Promise(resolve => setTimeout(resolve, 5000));
+    }
+    
+    const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+    console.log(`=== Sync complete ===`);
+    console.log(`Duration: ${duration}s`);
+    console.log(`Processed: ${successCount} users`);
+    console.log(`Errors: ${errorCount} users`);
+    console.log(`Total changes: ${totalChanges}`);
+    
+  } catch (error) {
+    console.error("Error during sync:", error);
+  }
+}
+
+// Schedule daily sync (runs every 24 hours)
+function scheduleDailySync(): void {
+  console.log("Scheduling daily role synchronization...");
+  
+  // Run sync immediately on startup (optional)
+  // performDailySync();
+  
+  // Schedule to run every 24 hours (86400000 milliseconds)
+  setInterval(() => {
+    performDailySync();
+  }, 24 * 60 * 60 * 1000);
+  
+  console.log("Daily sync scheduled to run every 24 hours");
+}
+
+// Function to trigger a sync for any guild at any time
+export async function triggerRoleSync(guildId?: string): Promise<void> {
+  const targetGuildId = guildId || Deno.env.get("DISCORD_GUILD_ID");
+  
+  if (!targetGuildId) {
+    console.error("No guild ID provided and DISCORD_GUILD_ID environment variable not set");
+    return;
+  }
+  
+  console.log(`Triggering role sync for guild: ${targetGuildId}`);
+  await performSyncForGuild(targetGuildId);
+}
+
+// Start the daily sync scheduler (can be disabled by setting DISABLE_DAILY_SYNC=true)
+if (!Deno.env.get("DISABLE_DAILY_SYNC")) {
+  scheduleDailySync();
+} else {
+  console.log("Daily sync scheduler disabled via DISABLE_DAILY_SYNC environment variable");
+} 
