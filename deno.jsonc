@@ -1,0 +1,14 @@
+{
+  "tasks": {
+    "dev": "deno run --allow-net --allow-env mod.ts",
+    "sync": "deno run --allow-net --allow-env cron.ts",
+    "test": "deno test --allow-net --allow-env"
+  },
+  "imports": {
+    "servest": "https://deno.land/x/servest@v1.3.4/mod.ts"
+  },
+  "compilerOptions": {
+    "allowJs": true,
+    "lib": ["deno.window"]
+  }
+} 
