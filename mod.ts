@@ -68,8 +68,8 @@ async function checkUserOwnsValidator(userId: string): Promise<boolean> {
     const cleanUserId = userId.replace('@', '').replace('<', '').replace('>', '');
     const userkey = `service:discord:${cleanUserId}`;
     
-    // Check if user owns a validator using the new API endpoint
-    const validatorResponse = await fetch(`https://api.ethos.network/api/v1/nfts/user/${userkey}/owns-validator`);
+    // Check if user owns a validator using the v2 API endpoint
+    const validatorResponse = await fetch(`https://api.ethos.network/api/v2/nfts/user/${userkey}/owns-validator`);
     
     if (!validatorResponse.ok) {
       console.log(`Validator check failed with status: ${validatorResponse.status}`);
@@ -79,8 +79,8 @@ async function checkUserOwnsValidator(userId: string): Promise<boolean> {
     const validatorData = await validatorResponse.json();
     console.log("Validator API Response:", JSON.stringify(validatorData, null, 2));
     
-    // Return true if the response indicates the user owns a validator
-    return validatorData === true || (validatorData.ok && validatorData.data === true);
+    // The API returns an array of validator NFTs. If the array has any items, the user owns a validator
+    return Array.isArray(validatorData) && validatorData.length > 0;
   } catch (error) {
     console.error("Error checking if user owns validator:", error);
     return false;
