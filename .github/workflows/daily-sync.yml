@@ -1,0 +1,70 @@
+name: Daily Ethos Role Sync
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # 2 AM UTC daily
+  workflow_dispatch:      # Allow manual triggering
+
+jobs:
+  sync-roles:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Role Sync
+        run: |
+          echo "🚀 Starting daily role synchronization..."
+          
+          # Trigger the chunked sync
+          response=$(curl -s -X POST "${{ secrets.DISCORD_SERVICE_URL }}/trigger-sync" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.SYNC_AUTH_TOKEN }}" \
+            -d '{"chunkSize": 50}' \
+            -w "%{http_code}")
+          
+          echo "Response: $response"
+          
+          # Check if request was successful
+          if [[ "${response: -3}" == "200" ]]; then
+            echo "✅ Daily sync triggered successfully"
+          else
+            echo "❌ Failed to trigger sync: HTTP ${response: -3}"
+            exit 1
+          fi
+      
+      - name: Wait and Check Completion
+        run: |
+          echo "⏳ Waiting for sync to complete..."
+          
+          # Wait for the sync to finish (with timeout)
+          max_wait=1800  # 30 minutes
+          wait_time=0
+          
+          while [ $wait_time -lt $max_wait ]; do
+            # Check sync status
+            status=$(curl -s "${{ secrets.DISCORD_SERVICE_URL }}/sync-status" \
+              -H "Authorization: Bearer ${{ secrets.SYNC_AUTH_TOKEN }}")
+            
+            is_running=$(echo "$status" | jq -r '.status.isRunning // false')
+            
+            if [ "$is_running" = "false" ]; then
+              echo "✅ Sync completed!"
+              processed=$(echo "$status" | jq -r '.status.processedUsers // 0')
+              total=$(echo "$status" | jq -r '.status.totalUsers // 0')
+              echo "📊 Final status: $processed/$total users processed"
+              break
+            fi
+            
+            processed=$(echo "$status" | jq -r '.status.processedUsers // 0')
+            total=$(echo "$status" | jq -r '.status.totalUsers // 0')
+            duration=$(echo "$status" | jq -r '.status.duration // 0')
+            duration_min=$((duration / 60000))
+            
+            echo "🔄 Sync in progress: $processed/$total users (${duration_min}m)"
+            
+            sleep 60  # Check every minute
+            wait_time=$((wait_time + 60))
+          done
+          
+          if [ $wait_time -ge $max_wait ]; then
+            echo "⚠️ Sync did not complete within 30 minutes"
+            exit 1
+          fi 
