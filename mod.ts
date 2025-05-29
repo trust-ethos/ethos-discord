@@ -1405,19 +1405,6 @@ function getRoleNameFromId(roleId: string): string {
   }
 }
 
-// Main daily sync function
-async function performDailySync(): Promise<void> {
-  const GUILD_ID = Deno.env.get("DISCORD_GUILD_ID");
-  
-  if (!GUILD_ID) {
-    console.error("[DAILY] DISCORD_GUILD_ID environment variable not set, skipping sync");
-    return;
-  }
-  
-  console.log("[DAILY] 🕒 Daily sync triggered, using chunked processing for reliability");
-  await triggerChunkedRoleSync(GUILD_ID, 0, SYNC_CONFIG.CHUNK_SIZE, "[DAILY] ");
-}
-
 // Manual sync function that can be triggered by command
 async function performManualSync(guildId: string): Promise<void> {
   console.log(`[MANUAL] === Starting manual role synchronization for guild ${guildId} ===`);
@@ -1518,21 +1505,6 @@ async function performSyncForGuild(guildId: string): Promise<void> {
     // Reset sync status
     resetSyncStatus();
   }
-}
-
-// Schedule daily sync (runs every 24 hours)
-function scheduleDailySync(): void {
-  console.log("[DAILY] Scheduling daily role synchronization...");
-  
-  // Run sync immediately on startup (optional)
-  // performDailySync();
-  
-  // Schedule to run every 24 hours (86400000 milliseconds)
-  setInterval(() => {
-    performDailySync();
-  }, 24 * 60 * 60 * 1000);
-  
-  console.log("[DAILY] Daily sync scheduled to run every 24 hours");
 }
 
 // Function to trigger a sync for any guild at any time
@@ -1692,9 +1664,9 @@ async function performChunkedSyncForGuild(guildId: string, startIndex: number, c
   }
 }
 
-// Start the daily sync scheduler (can be disabled by setting DISABLE_DAILY_SYNC=true)
-if (!Deno.env.get("DISABLE_DAILY_SYNC")) {
-  scheduleDailySync();
-} else {
-  console.log("[DAILY] Daily sync scheduler disabled via DISABLE_DAILY_SYNC environment variable");
-} 
+// Note: Automatic daily sync has been removed for reliability
+// Available sync options:
+// 1. Manual Discord command: /ethos_sync
+// 2. HTTP endpoints: POST /trigger-sync (for chunked processing)
+// 3. Sync helper script: deno run --allow-net --allow-env sync-helper.ts complete
+// 4. External automation: cron jobs, GitHub Actions, etc. 

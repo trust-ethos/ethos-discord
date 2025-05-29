@@ -4,6 +4,8 @@
 
 The Ethos Discord bot now includes a chunked role synchronization system designed to work reliably within Deno Deploy's execution time limits. Instead of processing all users in one long-running operation, the sync is broken into smaller chunks that complete quickly and can be chained together.
 
+**Note: Automatic daily sync has been removed for reliability. Use manual triggers or external automation instead.**
+
 ## Key Features
 
 - **Time-limited chunks**: Each chunk runs for a maximum of 12 minutes
@@ -31,7 +33,6 @@ const SYNC_CONFIG = {
 ## Environment Variables
 
 - `AUTO_CONTINUE_CHUNKS=true`: Automatically trigger next chunk after completion
-- `DISABLE_DAILY_SYNC=true`: Disable the daily sync scheduler
 - `SYNC_AUTH_TOKEN`: Optional authentication token for HTTP endpoints
 - `DISCORD_GUILD_ID`: Default guild ID for sync operations
 
