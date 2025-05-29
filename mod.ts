@@ -904,6 +904,47 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
         };
       }
       
+      // Handle ethos_sync_stop command (stop running sync)
+      else if (commandName === "ethos_sync_stop") {
+        const stopped = stopSync();
+        
+        return {
+          type: InteractionResponseType.ChannelMessageWithSource,
+          data: {
+            content: stopped ? 
+              "🛑 Stop signal sent to running sync process. It will stop after the current user." :
+              "ℹ️ No sync is currently running.",
+            flags: 64 // Ephemeral message
+          }
+        };
+      }
+      
+      // Handle ethos_sync_status command (check sync status)
+      else if (commandName === "ethos_sync_status") {
+        const status = getSyncStatus();
+        
+        let statusMessage = "";
+        if (status.isRunning) {
+          const minutes = Math.floor(status.duration / 60000);
+          const seconds = Math.floor((status.duration % 60000) / 1000);
+          statusMessage = `🔄 **Sync in progress**\n` +
+            `⏱️ Duration: ${minutes}m ${seconds}s\n` +
+            `👥 Progress: ${status.processedUsers}/${status.totalUsers} users\n` +
+            `🎯 Guild: ${status.currentGuild}\n` +
+            `${status.shouldStop ? "🛑 Stop signal sent" : ""}`;
+        } else {
+          statusMessage = "✅ No sync currently running";
+        }
+        
+        return {
+          type: InteractionResponseType.ChannelMessageWithSource,
+          data: {
+            content: statusMessage,
+            flags: 64 // Ephemeral message
+          }
+        };
+      }
+      
       // Unknown command
       else {
         return {
@@ -992,6 +1033,63 @@ serve(async (req) => {
     }
   }
   
+  // Handle sync stop endpoint
+  if (url.pathname === "/stop-sync" && req.method === "POST") {
+    try {
+      // Optional: Add authentication here
+      const authHeader = req.headers.get("Authorization");
+      const expectedAuth = Deno.env.get("SYNC_AUTH_TOKEN");
+      
+      if (expectedAuth && authHeader !== `Bearer ${expectedAuth}`) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      
+      const stopped = stopSync();
+      
+      return new Response(JSON.stringify({
+        success: true,
+        message: stopped ? "Stop signal sent to running sync" : "No sync currently running",
+        wasStopped: stopped
+      }), {
+        headers: { "Content-Type": "application/json" }
+      });
+      
+    } catch (error) {
+      console.error("Error stopping sync:", error);
+      return new Response(JSON.stringify({
+        success: false,
+        error: "Failed to stop sync"
+      }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+  }
+  
+  // Handle sync status endpoint
+  if (url.pathname === "/sync-status" && req.method === "GET") {
+    try {
+      const status = getSyncStatus();
+      
+      return new Response(JSON.stringify({
+        success: true,
+        status
+      }), {
+        headers: { "Content-Type": "application/json" }
+      });
+      
+    } catch (error) {
+      console.error("Error getting sync status:", error);
+      return new Response(JSON.stringify({
+        success: false,
+        error: "Failed to get sync status"
+      }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+  }
+  
   // Handle Discord interactions
   if (req.method === "POST" && url.pathname === "/") {
     try {
@@ -1024,6 +1122,46 @@ serve(async (req) => {
 });
 
 // ===== AUTOMATED ROLE SYNCHRONIZATION =====
+
+// Global sync state management
+let syncStatus = {
+  isRunning: false,
+  shouldStop: false,
+  currentGuild: null as string | null,
+  startTime: null as number | null,
+  processedUsers: 0,
+  totalUsers: 0
+};
+
+// Function to stop the current sync
+export function stopSync(): boolean {
+  if (syncStatus.isRunning) {
+    console.log("Stop signal sent to running sync process");
+    syncStatus.shouldStop = true;
+    return true;
+  }
+  return false;
+}
+
+// Function to get sync status
+export function getSyncStatus() {
+  return {
+    ...syncStatus,
+    duration: syncStatus.startTime ? Date.now() - syncStatus.startTime : 0
+  };
+}
+
+// Function to reset sync status
+function resetSyncStatus() {
+  syncStatus = {
+    isRunning: false,
+    shouldStop: false,
+    currentGuild: null,
+    startTime: null,
+    processedUsers: 0,
+    totalUsers: 0
+  };
+}
 
 // Function to get all verified members from a guild
 async function getVerifiedMembers(guildId: string): Promise<string[]> {
@@ -1196,6 +1334,20 @@ async function performManualSync(guildId: string): Promise<void> {
 
 // Core sync logic that can be used by both daily and manual sync
 async function performSyncForGuild(guildId: string): Promise<void> {
+  // Check if already running
+  if (syncStatus.isRunning) {
+    console.log("Sync already in progress, skipping");
+    return;
+  }
+
+  // Initialize sync status
+  syncStatus.isRunning = true;
+  syncStatus.shouldStop = false;
+  syncStatus.currentGuild = guildId;
+  syncStatus.startTime = Date.now();
+  syncStatus.processedUsers = 0;
+  syncStatus.totalUsers = 0;
+
   console.log("=== Starting role synchronization ===");
   const startTime = Date.now();
   
@@ -1208,6 +1360,7 @@ async function performSyncForGuild(guildId: string): Promise<void> {
       return;
     }
     
+    syncStatus.totalUsers = verifiedMembers.length;
     console.log(`Starting sync for ${verifiedMembers.length} verified members`);
     
     let successCount = 0;
@@ -1217,12 +1370,25 @@ async function performSyncForGuild(guildId: string): Promise<void> {
     // Process users in batches to avoid overwhelming the API
     const BATCH_SIZE = 10;
     for (let i = 0; i < verifiedMembers.length; i += BATCH_SIZE) {
+      // Check for stop signal
+      if (syncStatus.shouldStop) {
+        console.log("🛑 Sync stopped by user request");
+        break;
+      }
+
       const batch = verifiedMembers.slice(i, i + BATCH_SIZE);
       
       console.log(`Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(verifiedMembers.length / BATCH_SIZE)}`);
       
       for (const userId of batch) {
+        // Check for stop signal before each user
+        if (syncStatus.shouldStop) {
+          console.log("🛑 Sync stopped by user request");
+          break;
+        }
+
         const result = await syncUserRoles(guildId, userId);
+        syncStatus.processedUsers++;
         
         if (result.success) {
           successCount++;
@@ -1239,12 +1405,16 @@ async function performSyncForGuild(guildId: string): Promise<void> {
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
       
+      // Break out of batch loop if stopped
+      if (syncStatus.shouldStop) break;
+      
       // Longer delay between batches
       await new Promise(resolve => setTimeout(resolve, 5000));
     }
     
     const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-    console.log(`=== Sync complete ===`);
+    const status = syncStatus.shouldStop ? "stopped" : "complete";
+    console.log(`=== Sync ${status} ===`);
     console.log(`Duration: ${duration}s`);
     console.log(`Processed: ${successCount} users`);
     console.log(`Errors: ${errorCount} users`);
@@ -1252,6 +1422,9 @@ async function performSyncForGuild(guildId: string): Promise<void> {
     
   } catch (error) {
     console.error("Error during sync:", error);
+  } finally {
+    // Reset sync status
+    resetSyncStatus();
   }
 }
 
