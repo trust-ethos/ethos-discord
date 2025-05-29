@@ -1247,9 +1247,60 @@ async function syncUserRoles(guildId: string, userId: string): Promise<{ success
     const profile = await fetchEthosProfileByDiscord(userId);
     
     if ("error" in profile) {
-      console.log(`User ${userId} has no valid Ethos profile, skipping sync`);
-      return { success: true, changes: [] };
+      console.log(`User ${userId} has no valid Ethos profile, removing all Ethos roles`);
+      
+      // Remove all Ethos roles if they don't have a valid profile
+      const changes: string[] = [];
+      for (const roleId of currentEthosRoles) {
+        const removeUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${roleId}`;
+        const removeResponse = await discordApiCall(removeUrl, { method: "DELETE" });
+        
+        if (removeResponse.ok) {
+          const roleName = getRoleNameFromId(roleId);
+          changes.push(`Removed ${roleName} role (no valid profile)`);
+          console.log(`Removed role ${roleName} from user ${userId} (no valid profile)`);
+        }
+        
+        // Small delay to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 250));
+      }
+      
+      return { success: true, changes };
     }
+    
+    // Apply the same validation logic as ethos_verify command
+    const hasInteractions = 
+      (profile.elements?.totalReviews > 0) || 
+      (profile.elements?.vouchCount > 0) || 
+      profile.primaryAddress;
+      
+    // Check for exactly 1200 score with no interactions, which appears to be a default value
+    const isDefaultProfile = profile.score === 1200 && !hasInteractions;
+      
+    if (profile.score === undefined || typeof profile.score !== 'number' || !hasInteractions || isDefaultProfile) {
+      console.log(`User ${userId} has default/empty profile: score=${profile.score}, reviews=${profile.elements?.totalReviews}, vouches=${profile.elements?.vouchCount}, wallet=${profile.primaryAddress ? 'yes' : 'no'} - removing all Ethos roles`);
+      
+      // Remove all Ethos roles if they don't have a real profile
+      const changes: string[] = [];
+      for (const roleId of currentEthosRoles) {
+        const removeUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${roleId}`;
+        const removeResponse = await discordApiCall(removeUrl, { method: "DELETE" });
+        
+        if (removeResponse.ok) {
+          const roleName = getRoleNameFromId(roleId);
+          changes.push(`Removed ${roleName} role (default/incomplete profile)`);
+          console.log(`Removed role ${roleName} from user ${userId} (default/incomplete profile)`);
+        }
+        
+        // Small delay to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 250));
+      }
+      
+      return { success: true, changes };
+    }
+    
+    // User has a valid profile, proceed with normal role sync
+    console.log(`User ${userId} has valid profile with score ${profile.score} and primaryAddress: ${profile.primaryAddress ? 'yes' : 'no'}`);
     
     // Check validator status
     const hasValidator = await checkUserOwnsValidator(userId);
