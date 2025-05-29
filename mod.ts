@@ -512,73 +512,6 @@ function getRoleNameForScore(score: number): string {
   return "Untrusted";
 }
 
-// Function to remove all Ethos roles from a user more efficiently
-async function removeAllEthosRoles(guildId: string, userId: string): Promise<boolean> {
-  const allRoles = [
-    ETHOS_VERIFIED_ROLE_ID,
-    ETHOS_VERIFIED_PROFILE_ROLE_ID,
-    ETHOS_VALIDATOR_ROLE_ID,
-    ETHOS_ROLE_EXEMPLARY,
-    ETHOS_ROLE_REPUTABLE,
-    ETHOS_ROLE_NEUTRAL,
-    ETHOS_ROLE_QUESTIONABLE,
-    ETHOS_ROLE_UNTRUSTED
-  ];
-  
-  try {
-    // First fetch user's current roles
-    const url = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}`;
-    
-    const response = await discordApiCall(url, {
-      method: "GET"
-    });
-    
-    if (!response.ok) {
-      console.error(`Failed to fetch user: ${response.status}`);
-      return false;
-    }
-    
-    const userData = await response.json();
-    const userRoles = userData.roles || [];
-    
-    console.log(`User has ${userRoles.length} roles`);
-    
-    // Check which Ethos roles the user has
-    const rolesToRemove = allRoles.filter(roleId => userRoles.includes(roleId));
-    
-    console.log(`Found ${rolesToRemove.length} Ethos roles to remove`);
-    
-    // If user doesn't have any Ethos roles, skip removal
-    if (rolesToRemove.length === 0) {
-      console.log("User doesn't have any Ethos roles to remove");
-      return true;
-    }
-    
-    // Remove roles one by one, but with rate limit handling
-    for (const roleId of rolesToRemove) {
-      const removeUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${roleId}`;
-      const removeResponse = await discordApiCall(removeUrl, {
-        method: "DELETE"
-      });
-      
-      if (!removeResponse.ok) {
-        console.error(`Failed to remove role ${roleId}: ${removeResponse.status}`);
-        // Continue with other roles even if one fails
-      } else {
-        console.log(`Successfully removed role ${roleId}`);
-      }
-      
-      // Small delay to avoid rate limiting
-      await new Promise(resolve => setTimeout(resolve, SYNC_CONFIG.DELAY_BETWEEN_ROLE_OPS));
-    }
-    
-    return true;
-  } catch (error) {
-    console.error("Error removing roles:", error);
-    return false;
-  }
-}
-
 // Handle Discord interactions
 async function handleInteraction(interaction: APIInteraction): Promise<APIInteractionResponse> {
   switch (interaction.type) {
@@ -618,47 +551,20 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
           };
         }
         
-        // First, remove any existing Ethos roles
-        const rolesRemoved = await removeAllEthosRoles(guildId, userId);
-        if (!rolesRemoved) {
-          return {
-            type: InteractionResponseType.ChannelMessageWithSource,
-            data: {
-              content: "Failed to update roles. Please try again later.",
-              flags: 64 // Ephemeral message
-            }
-          };
-        }
+        // Use the optimized verification logic
+        const verifyResult = await verifyUserRoles(guildId, userId);
         
-        // Get user profile to check score
-        const profile = await fetchEthosProfileByDiscord(userId);
-        
-        if ("error" in profile) {
-          return {
-            type: InteractionResponseType.ChannelMessageWithSource,
-            data: {
-              content: profile.error,
-              flags: 64 // Ephemeral message
-            }
-          };
-        }
-        
-        console.log(`User ${userId} has Ethos score: ${profile.score}`);
-        
-        // Check if the user has an actual Ethos profile (not just a default value)
-        // Users without profiles should not be assigned roles
-        // We'll consider a profile valid only if it has a score and some interactions
-        // like reviews, vouches, or a claimed wallet address
-        const hasInteractions = 
-          (profile.elements?.totalReviews > 0) || 
-          (profile.elements?.vouchCount > 0) || 
-          profile.primaryAddress;
-          
-        // Check for exactly 1200 score with no interactions, which appears to be a default value
-        const isDefaultProfile = profile.score === 1200 && !hasInteractions;
-          
-        if (profile.score === undefined || typeof profile.score !== 'number' || !hasInteractions || isDefaultProfile) {
-          console.log(`User ${userId} has default/empty profile: score=${profile.score}, reviews=${profile.elements?.totalReviews}, vouches=${profile.elements?.vouchCount}, wallet=${profile.primaryAddress ? 'yes' : 'no'}`);
+        if (!verifyResult.success) {
+          // Check if it's a profile validation error
+          if (verifyResult.profile && "error" in verifyResult.profile) {
+            return {
+              type: InteractionResponseType.ChannelMessageWithSource,
+              data: {
+                content: verifyResult.profile.error,
+                flags: 64 // Ephemeral message
+              }
+            };
+          }
           
           return {
             type: InteractionResponseType.ChannelMessageWithSource,
@@ -669,63 +575,23 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
           };
         }
         
-        // Assign the verified role
-        const verifiedResult = await assignRoleToUser(guildId, userId, ETHOS_VERIFIED_ROLE_ID);
-        
-        if (!verifiedResult.success) {
-          return {
-            type: InteractionResponseType.ChannelMessageWithSource,
-            data: {
-              content: `Verification failed: ${verifiedResult.error}`,
-              flags: 64 // Ephemeral message
-            }
-          };
-        }
-        
-        // Assign the verified profile role (they have a valid Ethos profile)
-        const verifiedProfileResult = await assignRoleToUser(guildId, userId, ETHOS_VERIFIED_PROFILE_ROLE_ID);
-        
-        if (!verifiedProfileResult.success) {
-          console.error(`Failed to assign verified profile role to user ${userId}: ${verifiedProfileResult.error}`);
-        }
-        
-        // Check if user owns a validator NFT and assign validator role
+        const profile = verifyResult.profile;
         const ownsValidator = await checkUserOwnsValidator(userId);
-        let validatorResult: { success: boolean; error?: string } = { success: true };
+        const scoreName = getRoleNameForScore(profile.score);
         
-        if (ownsValidator) {
-          console.log(`User ${userId} owns a validator NFT, assigning Validator role`);
-          validatorResult = await assignRoleToUser(guildId, userId, ETHOS_VALIDATOR_ROLE_ID);
-        } else {
-          console.log(`User ${userId} does not own a validator NFT`);
-        }
-        
-        // Assign score-based role
-        const scoreRoleId = getRoleIdForScore(profile.score);
-        const roleName = getRoleNameForScore(profile.score);
-        
-        console.log(`Assigning score role: ${roleName} (ID: ${scoreRoleId}) for score ${profile.score}`);
-        
-        const scoreResult = await assignRoleToUser(guildId, userId, scoreRoleId);
-        
-        // Create response message
+        // Create response message based on changes made
         let responseMessage = "✅ Verification successful! ";
         
-        if (scoreResult.success) {
-          responseMessage += `You've been assigned the "${roleName}" role with a score of ${profile.score}.`;
+        if (verifyResult.changes.length > 0) {
+          responseMessage += `Role changes: ${verifyResult.changes.join(", ")}. `;
         } else {
-          responseMessage += `You've been verified but there was an error assigning your score role: ${scoreResult.error}`;
-          console.error(`Failed to assign score role ${roleName} (${scoreRoleId}) to user ${userId}: ${scoreResult.error}`);
+          responseMessage += "Your roles were already up to date. ";
         }
         
-        // Add validator role info to response
+        responseMessage += `You have a ${scoreName} score of ${profile.score}.`;
+        
         if (ownsValidator) {
-          if (validatorResult.success) {
-            responseMessage += " You've also been assigned the \"Validator\" role.";
-          } else {
-            responseMessage += ` There was an error assigning your Validator role: ${validatorResult.error}`;
-            console.error(`Failed to assign Validator role to user ${userId}: ${validatorResult.error}`);
-          }
+          responseMessage += " You also have the Validator role.";
         }
         
         return {
@@ -1286,6 +1152,104 @@ function getExpectedRoles(score: number, hasValidator: boolean, hasValidProfile:
   return expectedRoles;
 }
 
+// Function to verify and sync a user's roles (optimized for verification command)
+async function verifyUserRoles(guildId: string, userId: string): Promise<{ success: boolean; changes: string[]; profile?: any }> {
+  try {
+    console.log(`[VERIFY] Verifying roles for user: ${userId}`);
+    
+    // Get user's current Discord roles
+    const memberUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}`;
+    const memberResponse = await discordApiCall(memberUrl, { method: "GET" });
+    
+    if (!memberResponse.ok) {
+      console.error(`[VERIFY] Failed to fetch member ${userId}: ${memberResponse.status}`);
+      return { success: false, changes: [] };
+    }
+    
+    const memberData = await memberResponse.json();
+    const currentRoles = memberData.roles || [];
+    const currentEthosRoles = getCurrentEthosRoles(currentRoles);
+    
+    // Fetch user's Ethos profile
+    const profile = await fetchEthosProfileByDiscord(userId);
+    
+    if ("error" in profile) {
+      console.log(`[VERIFY] User ${userId} has no valid Ethos profile`);
+      return { success: false, changes: [], profile };
+    }
+    
+    // Apply the same validation logic as ethos_verify command
+    const hasInteractions = 
+      (profile.elements?.totalReviews > 0) || 
+      (profile.elements?.vouchCount > 0) || 
+      profile.primaryAddress;
+      
+    // Check for exactly 1200 score with no interactions, which appears to be a default value
+    const isDefaultProfile = profile.score === 1200 && !hasInteractions;
+      
+    if (profile.score === undefined || typeof profile.score !== 'number' || !hasInteractions || isDefaultProfile) {
+      console.log(`[VERIFY] User ${userId} has default/empty profile: score=${profile.score}, reviews=${profile.elements?.totalReviews}, vouches=${profile.elements?.vouchCount}, wallet=${profile.primaryAddress ? 'yes' : 'no'}`);
+      return { success: false, changes: [], profile };
+    }
+    
+    // User has a valid profile, proceed with role verification
+    console.log(`[VERIFY] User ${userId} has valid profile with score ${profile.score}`);
+    
+    // Check validator status
+    const hasValidator = await checkUserOwnsValidator(userId);
+    
+    // Get expected roles
+    const expectedRoles = getExpectedRoles(profile.score, hasValidator, true);
+    
+    // Compare current vs expected roles
+    const rolesToAdd = expectedRoles.filter(roleId => !currentRoles.includes(roleId));
+    const rolesToRemove = currentEthosRoles.filter(roleId => !expectedRoles.includes(roleId));
+    
+    // Early exit if no changes needed
+    if (rolesToAdd.length === 0 && rolesToRemove.length === 0) {
+      console.log(`[VERIFY] User ${userId} already has correct roles, no changes needed`);
+      return { success: true, changes: [], profile };
+    }
+    
+    const changes: string[] = [];
+    
+    // Remove roles that shouldn't be there
+    for (const roleId of rolesToRemove) {
+      const removeUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${roleId}`;
+      const removeResponse = await discordApiCall(removeUrl, { method: "DELETE" });
+      
+      if (removeResponse.ok) {
+        const roleName = getRoleNameFromId(roleId);
+        changes.push(`Removed ${roleName} role`);
+        console.log(`[VERIFY] Removed role ${roleName} from user ${userId}`);
+      }
+      
+      // Small delay to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, SYNC_CONFIG.DELAY_BETWEEN_ROLE_OPS));
+    }
+    
+    // Add roles that should be there
+    for (const roleId of rolesToAdd) {
+      const addUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${roleId}`;
+      const addResponse = await discordApiCall(addUrl, { method: "PUT" });
+      
+      if (addResponse.ok) {
+        const roleName = getRoleNameFromId(roleId);
+        changes.push(`Added ${roleName} role`);
+        console.log(`[VERIFY] Added role ${roleName} to user ${userId}`);
+      }
+      
+      // Small delay to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, SYNC_CONFIG.DELAY_BETWEEN_ROLE_OPS));
+    }
+    
+    return { success: true, changes, profile };
+  } catch (error) {
+    console.error(`[VERIFY] Error verifying user ${userId}:`, error);
+    return { success: false, changes: [] };
+  }
+}
+
 // Function to sync a single user's roles
 async function syncUserRoles(guildId: string, userId: string): Promise<{ success: boolean; changes: string[] }> {
   try {
@@ -1380,6 +1344,12 @@ async function syncUserRoles(guildId: string, userId: string): Promise<{ success
     // Compare current vs expected roles
     const rolesToAdd = expectedRoles.filter(roleId => !currentRoles.includes(roleId));
     const rolesToRemove = currentEthosRoles.filter(roleId => !expectedRoles.includes(roleId));
+    
+    // Early exit if no changes needed
+    if (rolesToAdd.length === 0 && rolesToRemove.length === 0) {
+      console.log(`User ${userId} already has correct roles, no changes needed`);
+      return { success: true, changes: [] };
+    }
     
     const changes: string[] = [];
     
