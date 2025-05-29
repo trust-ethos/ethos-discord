@@ -97,9 +97,7 @@ const APPLICATION_ID = Deno.env.get("DISCORD_APPLICATION_ID");
 // Hardcoded role IDs
 const ETHOS_VERIFIED_ROLE_ID = "1330927513056186501"; // "verified" role (Discord connected)
 const ETHOS_VERIFIED_PROFILE_ROLE_ID = "1367923031040721046"; // "Verified ethos profile" role (active profile)
-// Validator role ID
-const ETHOS_VALIDATOR_ROLE_ID = "1377477396759842936";
-// Score-based role IDs
+// Score-based role IDs (regular)
 const ETHOS_ROLE_EXEMPLARY = Deno.env.get("ETHOS_ROLE_EXEMPLARY") ||
   "1253205892917231677"; // Score >= 2000
 const ETHOS_ROLE_REPUTABLE = Deno.env.get("ETHOS_ROLE_REPUTABLE") ||
@@ -110,6 +108,13 @@ const ETHOS_ROLE_QUESTIONABLE = Deno.env.get("ETHOS_ROLE_QUESTIONABLE") ||
   "1253206252306305024"; // Score >= 800
 const ETHOS_ROLE_UNTRUSTED = Deno.env.get("ETHOS_ROLE_UNTRUSTED") ||
   "1253206385877975043"; // Score < 800
+
+// Validator score-based role IDs
+const ETHOS_VALIDATOR_EXEMPLARY = "1377685521723293706"; // Score >= 2000 + validator
+const ETHOS_VALIDATOR_REPUTABLE = "1377477396759842936"; // Score >= 1600 + validator
+const ETHOS_VALIDATOR_NEUTRAL = "1377685710026571876"; // Score >= 1200 + validator
+const ETHOS_VALIDATOR_QUESTIONABLE = "1377688531522158632"; // Score >= 800 + validator
+// No untrusted validator role - untrusted users get regular untrusted role even if they have validator
 
 if (!PUBLIC_KEY || !APPLICATION_ID) {
   console.error("Environment variables check failed:");
@@ -687,13 +692,22 @@ async function verifyRequest(request: Request): Promise<APIInteraction | null> {
   }
 }
 
-// Function to get role ID based on score
+// Function to get role ID based on score (regular roles)
 function getRoleIdForScore(score: number): string {
   if (score >= 2000) return ETHOS_ROLE_EXEMPLARY;
   if (score >= 1600) return ETHOS_ROLE_REPUTABLE;
   if (score >= 1200) return ETHOS_ROLE_NEUTRAL;
   if (score >= 800) return ETHOS_ROLE_QUESTIONABLE;
   return ETHOS_ROLE_UNTRUSTED;
+}
+
+// Function to get validator role ID based on score
+function getValidatorRoleIdForScore(score: number): string | null {
+  if (score >= 2000) return ETHOS_VALIDATOR_EXEMPLARY;
+  if (score >= 1600) return ETHOS_VALIDATOR_REPUTABLE;
+  if (score >= 1200) return ETHOS_VALIDATOR_NEUTRAL;
+  if (score >= 800) return ETHOS_VALIDATOR_QUESTIONABLE;
+  return null; // No validator role for untrusted - they get regular untrusted role
 }
 
 // Function to get role name based on score
@@ -1449,7 +1463,10 @@ function getCurrentEthosRoles(userRoles: string[]): string[] {
   const ethosRoles = [
     ETHOS_VERIFIED_ROLE_ID,
     ETHOS_VERIFIED_PROFILE_ROLE_ID,
-    ETHOS_VALIDATOR_ROLE_ID,
+    ETHOS_VALIDATOR_EXEMPLARY,
+    ETHOS_VALIDATOR_REPUTABLE,
+    ETHOS_VALIDATOR_NEUTRAL,
+    ETHOS_VALIDATOR_QUESTIONABLE,
     ETHOS_ROLE_EXEMPLARY,
     ETHOS_ROLE_REPUTABLE,
     ETHOS_ROLE_NEUTRAL,
@@ -1475,12 +1492,19 @@ function getExpectedRoles(
 
   // Add score-based role only if they have a valid profile
   if (hasValidProfile) {
-    expectedRoles.push(getRoleIdForScore(score));
-  }
-
-  // Add validator role if they own a validator and have valid profile
-  if (hasValidator && hasValidProfile) {
-    expectedRoles.push(ETHOS_VALIDATOR_ROLE_ID);
+    if (hasValidator) {
+      // If they have a validator, give them the validator version of their score role
+      const validatorRoleId = getValidatorRoleIdForScore(score);
+      if (validatorRoleId) {
+        expectedRoles.push(validatorRoleId);
+      } else {
+        // Untrusted users get regular untrusted role even with validator
+        expectedRoles.push(getRoleIdForScore(score));
+      }
+    } else {
+      // No validator, give them regular score role
+      expectedRoles.push(getRoleIdForScore(score));
+    }
   }
 
   return expectedRoles;
@@ -2165,8 +2189,14 @@ function getRoleNameFromId(roleId: string): string {
       return "Verified";
     case ETHOS_VERIFIED_PROFILE_ROLE_ID:
       return "Verified Profile";
-    case ETHOS_VALIDATOR_ROLE_ID:
-      return "Validator";
+    case ETHOS_VALIDATOR_EXEMPLARY:
+      return "Exemplary Validator";
+    case ETHOS_VALIDATOR_REPUTABLE:
+      return "Reputable Validator";
+    case ETHOS_VALIDATOR_NEUTRAL:
+      return "Neutral Validator";
+    case ETHOS_VALIDATOR_QUESTIONABLE:
+      return "Questionable Validator";
     case ETHOS_ROLE_EXEMPLARY:
       return "Exemplary";
     case ETHOS_ROLE_REPUTABLE:
