@@ -569,7 +569,7 @@ async function removeAllEthosRoles(guildId: string, userId: string): Promise<boo
       }
       
       // Small delay to avoid rate limiting
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise(resolve => setTimeout(resolve, SYNC_CONFIG.DELAY_BETWEEN_ROLE_OPS));
     }
     
     return true;
@@ -924,7 +924,7 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
         
         // Start the sync asynchronously and respond immediately
         performManualSync(guildId).catch(error => {
-          console.error("Error in manual sync:", error);
+          console.error("[DISCORD] Error in manual sync:", error);
         });
         
         return {
@@ -1031,24 +1031,31 @@ serve(async (req) => {
         return new Response("Unauthorized", { status: 401 });
       }
       
-      // Get guild ID from request body or use default
+      // Get guild ID and optional parameters from request body
       let guildId: string | undefined;
+      let startIndex = 0;
+      let chunkSize = SYNC_CONFIG.CHUNK_SIZE;
+      
       try {
         const body = await req.json();
         guildId = body.guildId;
+        startIndex = body.startIndex || 0;
+        chunkSize = body.chunkSize || SYNC_CONFIG.CHUNK_SIZE;
       } catch {
-        // No body or invalid JSON, use default guild ID
+        // No body or invalid JSON, use defaults
       }
       
-      // Trigger the sync asynchronously
-      triggerRoleSync(guildId).catch(error => {
-        console.error("Error in triggered sync:", error);
+      // Trigger the chunked sync asynchronously
+      triggerChunkedRoleSync(guildId, startIndex, chunkSize, "[HTTP] ").catch(error => {
+        console.error("[HTTP] Error in triggered chunked sync:", error);
       });
       
       return new Response(JSON.stringify({
         success: true,
-        message: "Role synchronization triggered",
-        guildId: guildId || Deno.env.get("DISCORD_GUILD_ID") || "default"
+        message: "Chunked role synchronization triggered",
+        guildId: guildId || Deno.env.get("DISCORD_GUILD_ID") || "default",
+        startIndex,
+        chunkSize
       }), {
         headers: { "Content-Type": "application/json" }
       });
@@ -1162,7 +1169,19 @@ let syncStatus = {
   currentGuild: null as string | null,
   startTime: null as number | null,
   processedUsers: 0,
-  totalUsers: 0
+  totalUsers: 0,
+  currentBatch: 0,
+  lastProcessedIndex: 0
+};
+
+// Configuration for chunked processing
+const SYNC_CONFIG = {
+  BATCH_SIZE: 10,           // Users per batch
+  CHUNK_SIZE: 50,           // Users per chunk (for Deno limits)
+  MAX_EXECUTION_TIME: 12 * 60 * 1000, // 12 minutes max execution
+  DELAY_BETWEEN_USERS: 2000,     // 2 seconds
+  DELAY_BETWEEN_BATCHES: 5000,   // 5 seconds
+  DELAY_BETWEEN_ROLE_OPS: 500    // 500ms
 };
 
 // Function to stop the current sync
@@ -1191,7 +1210,9 @@ function resetSyncStatus() {
     currentGuild: null,
     startTime: null,
     processedUsers: 0,
-    totalUsers: 0
+    totalUsers: 0,
+    currentBatch: 0,
+    lastProcessedIndex: 0
   };
 }
 
@@ -1306,7 +1327,7 @@ async function syncUserRoles(guildId: string, userId: string): Promise<{ success
         }
         
         // Small delay to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, SYNC_CONFIG.DELAY_BETWEEN_ROLE_OPS));
       }
       
       return { success: true, changes };
@@ -1341,7 +1362,7 @@ async function syncUserRoles(guildId: string, userId: string): Promise<{ success
         }
         
         // Small delay to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, SYNC_CONFIG.DELAY_BETWEEN_ROLE_OPS));
       }
       
       return { success: true, changes };
@@ -1374,7 +1395,7 @@ async function syncUserRoles(guildId: string, userId: string): Promise<{ success
       }
       
       // Small delay to avoid rate limiting
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise(resolve => setTimeout(resolve, SYNC_CONFIG.DELAY_BETWEEN_ROLE_OPS));
     }
     
     // Add roles that should be there
@@ -1389,7 +1410,7 @@ async function syncUserRoles(guildId: string, userId: string): Promise<{ success
       }
       
       // Small delay to avoid rate limiting
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise(resolve => setTimeout(resolve, SYNC_CONFIG.DELAY_BETWEEN_ROLE_OPS));
     }
     
     return { success: true, changes };
@@ -1419,16 +1440,17 @@ async function performDailySync(): Promise<void> {
   const GUILD_ID = Deno.env.get("DISCORD_GUILD_ID");
   
   if (!GUILD_ID) {
-    console.error("DISCORD_GUILD_ID environment variable not set, skipping sync");
+    console.error("[DAILY] DISCORD_GUILD_ID environment variable not set, skipping sync");
     return;
   }
   
-  await performSyncForGuild(GUILD_ID);
+  console.log("[DAILY] 🕒 Daily sync triggered, using chunked processing for reliability");
+  await triggerChunkedRoleSync(GUILD_ID, 0, SYNC_CONFIG.CHUNK_SIZE, "[DAILY] ");
 }
 
 // Manual sync function that can be triggered by command
 async function performManualSync(guildId: string): Promise<void> {
-  console.log(`=== Starting manual role synchronization for guild ${guildId} ===`);
+  console.log(`[MANUAL] === Starting manual role synchronization for guild ${guildId} ===`);
   await performSyncForGuild(guildId);
 }
 
@@ -1502,14 +1524,14 @@ async function performSyncForGuild(guildId: string): Promise<void> {
         }
         
         // Delay between users to respect rate limits
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        await new Promise(resolve => setTimeout(resolve, SYNC_CONFIG.DELAY_BETWEEN_USERS));
       }
       
       // Break out of batch loop if stopped
       if (syncStatus.shouldStop) break;
       
       // Longer delay between batches
-      await new Promise(resolve => setTimeout(resolve, 5000));
+      await new Promise(resolve => setTimeout(resolve, SYNC_CONFIG.DELAY_BETWEEN_BATCHES));
     }
     
     const duration = ((Date.now() - startTime) / 1000).toFixed(2);
@@ -1530,7 +1552,7 @@ async function performSyncForGuild(guildId: string): Promise<void> {
 
 // Schedule daily sync (runs every 24 hours)
 function scheduleDailySync(): void {
-  console.log("Scheduling daily role synchronization...");
+  console.log("[DAILY] Scheduling daily role synchronization...");
   
   // Run sync immediately on startup (optional)
   // performDailySync();
@@ -1540,7 +1562,7 @@ function scheduleDailySync(): void {
     performDailySync();
   }, 24 * 60 * 60 * 1000);
   
-  console.log("Daily sync scheduled to run every 24 hours");
+  console.log("[DAILY] Daily sync scheduled to run every 24 hours");
 }
 
 // Function to trigger a sync for any guild at any time
@@ -1556,9 +1578,153 @@ export async function triggerRoleSync(guildId?: string): Promise<void> {
   await performSyncForGuild(targetGuildId);
 }
 
+// Chunked sync function for Deno Deploy compatibility
+export async function triggerChunkedRoleSync(guildId?: string, startIndex = 0, chunkSize = SYNC_CONFIG.CHUNK_SIZE, logPrefix = ""): Promise<{ completed: boolean; nextIndex: number; totalUsers: number }> {
+  const targetGuildId = guildId || Deno.env.get("DISCORD_GUILD_ID");
+  
+  if (!targetGuildId) {
+    console.error(`${logPrefix}No guild ID provided and DISCORD_GUILD_ID environment variable not set`);
+    return { completed: true, nextIndex: 0, totalUsers: 0 };
+  }
+  
+  console.log(`${logPrefix}🚀 Starting chunked sync for guild: ${targetGuildId}, startIndex: ${startIndex}, chunkSize: ${chunkSize}`);
+  return await performChunkedSyncForGuild(targetGuildId, startIndex, chunkSize, logPrefix);
+}
+
+// Core chunked sync logic optimized for Deno Deploy
+async function performChunkedSyncForGuild(guildId: string, startIndex: number, chunkSize: number, logPrefix = ""): Promise<{ completed: boolean; nextIndex: number; totalUsers: number }> {
+  // Check if already running
+  if (syncStatus.isRunning) {
+    console.log(`${logPrefix}Sync already in progress, skipping`);
+    return { completed: false, nextIndex: startIndex, totalUsers: 0 };
+  }
+
+  // Initialize sync status
+  syncStatus.isRunning = true;
+  syncStatus.shouldStop = false;
+  syncStatus.currentGuild = guildId;
+  syncStatus.startTime = Date.now();
+  syncStatus.lastProcessedIndex = startIndex;
+
+  console.log(`${logPrefix}=== Starting chunked role synchronization ===`);
+  const executionStartTime = Date.now();
+  
+  try {
+    // Get all verified members
+    const verifiedMembers = await getVerifiedMembers(guildId);
+    
+    if (verifiedMembers.length === 0) {
+      console.log(`${logPrefix}No verified members found, sync complete`);
+      return { completed: true, nextIndex: 0, totalUsers: 0 };
+    }
+    
+    syncStatus.totalUsers = verifiedMembers.length;
+    const endIndex = Math.min(startIndex + chunkSize, verifiedMembers.length);
+    const chunkMembers = verifiedMembers.slice(startIndex, endIndex);
+    
+    console.log(`${logPrefix}📊 Processing chunk: ${startIndex}-${endIndex-1} of ${verifiedMembers.length} total users (${chunkMembers.length} in this chunk)`);
+    
+    let successCount = 0;
+    let errorCount = 0;
+    let totalChanges = 0;
+    
+    // Process users in batches within the chunk
+    const BATCH_SIZE = SYNC_CONFIG.BATCH_SIZE;
+    for (let i = 0; i < chunkMembers.length; i += BATCH_SIZE) {
+      // Check execution time limit
+      const elapsed = Date.now() - executionStartTime;
+      if (elapsed > SYNC_CONFIG.MAX_EXECUTION_TIME) {
+        console.warn(`${logPrefix}⏰ Execution time limit reached (${elapsed}ms), stopping chunk processing`);
+        const processedInChunk = i;
+        const actualNextIndex = startIndex + processedInChunk;
+        return { completed: actualNextIndex >= verifiedMembers.length, nextIndex: actualNextIndex, totalUsers: verifiedMembers.length };
+      }
+      
+      // Check for stop signal
+      if (syncStatus.shouldStop) {
+        console.log(`${logPrefix}🛑 Sync stopped by user request`);
+        const processedInChunk = i;
+        const actualNextIndex = startIndex + processedInChunk;
+        return { completed: false, nextIndex: actualNextIndex, totalUsers: verifiedMembers.length };
+      }
+
+      const batch = chunkMembers.slice(i, i + BATCH_SIZE);
+      syncStatus.currentBatch = Math.floor((startIndex + i) / BATCH_SIZE);
+      
+      console.log(`${logPrefix}Processing batch ${syncStatus.currentBatch + 1} (${batch.length} users)`);
+      
+      for (const userId of batch) {
+        // Check for stop signal before each user
+        if (syncStatus.shouldStop) {
+          console.log(`${logPrefix}🛑 Sync stopped by user request`);
+          break;
+        }
+
+        const result = await syncUserRoles(guildId, userId);
+        syncStatus.processedUsers = startIndex + i + batch.indexOf(userId) + 1;
+        syncStatus.lastProcessedIndex = syncStatus.processedUsers - 1;
+        
+        if (result.success) {
+          successCount++;
+          totalChanges += result.changes.length;
+          
+          if (result.changes.length > 0) {
+            console.log(`${logPrefix}👤 User ${userId} (${syncStatus.processedUsers}/${verifiedMembers.length}): ${result.changes.join(", ")}`);
+          }
+        } else {
+          errorCount++;
+        }
+        
+        // Delay between users to respect rate limits
+        await new Promise(resolve => setTimeout(resolve, SYNC_CONFIG.DELAY_BETWEEN_USERS));
+      }
+      
+      // Break out of batch loop if stopped
+      if (syncStatus.shouldStop) break;
+      
+      // Longer delay between batches
+      await new Promise(resolve => setTimeout(resolve, SYNC_CONFIG.DELAY_BETWEEN_BATCHES));
+    }
+    
+    const duration = ((Date.now() - executionStartTime) / 1000).toFixed(2);
+    const nextIndex = endIndex;
+    const isCompleted = nextIndex >= verifiedMembers.length;
+    
+    console.log(`${logPrefix}=== Chunk ${isCompleted ? 'complete' : 'processed'} ===`);
+    console.log(`${logPrefix}Duration: ${duration}s`);
+    console.log(`${logPrefix}Chunk processed: ${successCount} users`);
+    console.log(`${logPrefix}Chunk errors: ${errorCount} users`);
+    console.log(`${logPrefix}Chunk changes: ${totalChanges}`);
+    console.log(`${logPrefix}Overall progress: ${nextIndex}/${verifiedMembers.length} (${((nextIndex/verifiedMembers.length)*100).toFixed(1)}%)`);
+    
+    if (!isCompleted) {
+      console.log(`${logPrefix}🔄 Next chunk should start at index ${nextIndex}`);
+      
+      // Auto-trigger next chunk after a delay (optional)
+      if (Deno.env.get("AUTO_CONTINUE_CHUNKS") === "true") {
+        console.log(`${logPrefix}🔗 Auto-triggering next chunk in 10 seconds...`);
+        setTimeout(() => {
+          triggerChunkedRoleSync(guildId, nextIndex, chunkSize, logPrefix).catch(error => {
+            console.error(`${logPrefix}Error in auto-triggered next chunk:`, error);
+          });
+        }, 10000);
+      }
+    }
+    
+    return { completed: isCompleted, nextIndex, totalUsers: verifiedMembers.length };
+    
+  } catch (error) {
+    console.error(`${logPrefix}Error during chunked sync:`, error);
+    return { completed: false, nextIndex: startIndex, totalUsers: 0 };
+  } finally {
+    // Reset sync status
+    resetSyncStatus();
+  }
+}
+
 // Start the daily sync scheduler (can be disabled by setting DISABLE_DAILY_SYNC=true)
 if (!Deno.env.get("DISABLE_DAILY_SYNC")) {
   scheduleDailySync();
 } else {
-  console.log("Daily sync scheduler disabled via DISABLE_DAILY_SYNC environment variable");
+  console.log("[DAILY] Daily sync scheduler disabled via DISABLE_DAILY_SYNC environment variable");
 } 
