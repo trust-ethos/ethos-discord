@@ -764,7 +764,7 @@ async function handleInteraction(
         // Clear cache for manual verification to ensure fresh check
         await clearUserCache(userId);
 
-        // Use the optimized verification logic
+        // Use the optimized verification logic (always forces sync, bypasses cache)
         const verifyResult = await verifyUserRoles(guildId, userId);
 
         if (!verifyResult.success) {
@@ -804,10 +804,21 @@ async function handleInteraction(
           responseMessage += "Your roles were already up to date. ";
         }
 
-        responseMessage += `You have a ${scoreName} score of ${profile.score}.`;
-
+        // Show the appropriate role information
         if (ownsValidator) {
-          responseMessage += " You also have the Validator role.";
+          const validatorRoleId = getValidatorRoleIdForScore(profile.score);
+          if (validatorRoleId) {
+            const validatorRoleName = getRoleNameFromId(validatorRoleId);
+            responseMessage +=
+              `You have a ${scoreName} score of ${profile.score} and the ${validatorRoleName} role.`;
+          } else {
+            // Untrusted users get regular untrusted role even with validator
+            responseMessage +=
+              `You have a ${scoreName} score of ${profile.score}. Note: Untrusted users receive the regular Untrusted role even with a validator NFT.`;
+          }
+        } else {
+          responseMessage +=
+            `You have a ${scoreName} score of ${profile.score}.`;
         }
 
         return {
