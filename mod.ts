@@ -945,7 +945,55 @@ function getScoreColor(score: number): number {
 
 // Start HTTP server
 serve(async (req) => {
-  if (req.method === "POST") {
+  const url = new URL(req.url);
+  
+  // Handle role sync trigger endpoint
+  if (url.pathname === "/trigger-sync" && req.method === "POST") {
+    try {
+      // Optional: Add authentication here
+      const authHeader = req.headers.get("Authorization");
+      const expectedAuth = Deno.env.get("SYNC_AUTH_TOKEN");
+      
+      if (expectedAuth && authHeader !== `Bearer ${expectedAuth}`) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      
+      // Get guild ID from request body or use default
+      let guildId: string | undefined;
+      try {
+        const body = await req.json();
+        guildId = body.guildId;
+      } catch {
+        // No body or invalid JSON, use default guild ID
+      }
+      
+      // Trigger the sync asynchronously
+      triggerRoleSync(guildId).catch(error => {
+        console.error("Error in triggered sync:", error);
+      });
+      
+      return new Response(JSON.stringify({
+        success: true,
+        message: "Role synchronization triggered",
+        guildId: guildId || Deno.env.get("DISCORD_GUILD_ID") || "default"
+      }), {
+        headers: { "Content-Type": "application/json" }
+      });
+      
+    } catch (error) {
+      console.error("Error triggering sync:", error);
+      return new Response(JSON.stringify({
+        success: false,
+        error: "Failed to trigger sync"
+      }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+  }
+  
+  // Handle Discord interactions
+  if (req.method === "POST" && url.pathname === "/") {
     try {
       const interaction = await verifyRequest(req);
       if (!interaction) {
@@ -960,6 +1008,16 @@ serve(async (req) => {
       console.error("Error handling request:", error);
       return new Response("Internal Server Error", { status: 500 });
     }
+  }
+
+  // Health check endpoint
+  if (url.pathname === "/health" && req.method === "GET") {
+    return new Response(JSON.stringify({
+      status: "healthy",
+      timestamp: new Date().toISOString()
+    }), {
+      headers: { "Content-Type": "application/json" }
+    });
   }
 
   return new Response("OK", { status: 200 });
