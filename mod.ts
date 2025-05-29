@@ -1247,11 +1247,13 @@ async function syncUserRoles(guildId: string, userId: string): Promise<{ success
     const profile = await fetchEthosProfileByDiscord(userId);
     
     if ("error" in profile) {
-      console.log(`User ${userId} has no valid Ethos profile, removing all Ethos roles`);
+      console.log(`User ${userId} has no valid Ethos profile, removing score-based and validator roles only`);
       
-      // Remove all Ethos roles if they don't have a valid profile
+      // Remove only score-based and validator roles, keep verified role
+      const rolesToRemove = currentEthosRoles.filter(roleId => roleId !== ETHOS_VERIFIED_ROLE_ID);
       const changes: string[] = [];
-      for (const roleId of currentEthosRoles) {
+      
+      for (const roleId of rolesToRemove) {
         const removeUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${roleId}`;
         const removeResponse = await discordApiCall(removeUrl, { method: "DELETE" });
         
@@ -1278,11 +1280,13 @@ async function syncUserRoles(guildId: string, userId: string): Promise<{ success
     const isDefaultProfile = profile.score === 1200 && !hasInteractions;
       
     if (profile.score === undefined || typeof profile.score !== 'number' || !hasInteractions || isDefaultProfile) {
-      console.log(`User ${userId} has default/empty profile: score=${profile.score}, reviews=${profile.elements?.totalReviews}, vouches=${profile.elements?.vouchCount}, wallet=${profile.primaryAddress ? 'yes' : 'no'} - removing all Ethos roles`);
+      console.log(`User ${userId} has default/empty profile: score=${profile.score}, reviews=${profile.elements?.totalReviews}, vouches=${profile.elements?.vouchCount}, wallet=${profile.primaryAddress ? 'yes' : 'no'} - removing score-based and validator roles only`);
       
-      // Remove all Ethos roles if they don't have a real profile
+      // Remove only score-based and validator roles, keep verified role
+      const rolesToRemove = currentEthosRoles.filter(roleId => roleId !== ETHOS_VERIFIED_ROLE_ID);
       const changes: string[] = [];
-      for (const roleId of currentEthosRoles) {
+      
+      for (const roleId of rolesToRemove) {
         const removeUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${roleId}`;
         const removeResponse = await discordApiCall(removeUrl, { method: "DELETE" });
         
