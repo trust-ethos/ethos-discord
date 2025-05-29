@@ -13,7 +13,8 @@ import {
 const PUBLIC_KEY = Deno.env.get("DISCORD_PUBLIC_KEY");
 const APPLICATION_ID = Deno.env.get("DISCORD_APPLICATION_ID");
 // Hardcoded role IDs
-const ETHOS_VERIFIED_ROLE_ID = "1330927513056186501"; // "verified" role
+const ETHOS_VERIFIED_ROLE_ID = "1330927513056186501"; // "verified" role (Discord connected)
+const ETHOS_VERIFIED_PROFILE_ROLE_ID = "1367923031040721046"; // "Verified ethos profile" role (active profile)
 // Validator role ID
 const ETHOS_VALIDATOR_ROLE_ID = "1377477396759842936";
 // Score-based role IDs
@@ -492,6 +493,7 @@ function getRoleNameForScore(score: number): string {
 async function removeAllEthosRoles(guildId: string, userId: string): Promise<boolean> {
   const allRoles = [
     ETHOS_VERIFIED_ROLE_ID,
+    ETHOS_VERIFIED_PROFILE_ROLE_ID,
     ETHOS_VALIDATOR_ROLE_ID,
     ETHOS_ROLE_EXEMPLARY,
     ETHOS_ROLE_REPUTABLE,
@@ -655,6 +657,13 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
               flags: 64 // Ephemeral message
             }
           };
+        }
+        
+        // Assign the verified profile role (they have a valid Ethos profile)
+        const verifiedProfileResult = await assignRoleToUser(guildId, userId, ETHOS_VERIFIED_PROFILE_ROLE_ID);
+        
+        if (!verifiedProfileResult.success) {
+          console.error(`Failed to assign verified profile role to user ${userId}: ${verifiedProfileResult.error}`);
         }
         
         // Check if user owns a validator NFT and assign validator role
@@ -1199,6 +1208,7 @@ async function getVerifiedMembers(guildId: string): Promise<string[]> {
 function getCurrentEthosRoles(userRoles: string[]): string[] {
   const ethosRoles = [
     ETHOS_VERIFIED_ROLE_ID,
+    ETHOS_VERIFIED_PROFILE_ROLE_ID,
     ETHOS_VALIDATOR_ROLE_ID,
     ETHOS_ROLE_EXEMPLARY,
     ETHOS_ROLE_REPUTABLE,
@@ -1211,14 +1221,21 @@ function getCurrentEthosRoles(userRoles: string[]): string[] {
 }
 
 // Function to get expected roles based on Ethos profile
-function getExpectedRoles(score: number, hasValidator: boolean): string[] {
-  const expectedRoles = [ETHOS_VERIFIED_ROLE_ID]; // Always has verified role
+function getExpectedRoles(score: number, hasValidator: boolean, hasValidProfile: boolean): string[] {
+  const expectedRoles = [ETHOS_VERIFIED_ROLE_ID]; // Always has basic verified role
   
-  // Add score-based role
-  expectedRoles.push(getRoleIdForScore(score));
+  // Add verified profile role if they have a valid profile
+  if (hasValidProfile) {
+    expectedRoles.push(ETHOS_VERIFIED_PROFILE_ROLE_ID);
+  }
   
-  // Add validator role if they own a validator
-  if (hasValidator) {
+  // Add score-based role only if they have a valid profile
+  if (hasValidProfile) {
+    expectedRoles.push(getRoleIdForScore(score));
+  }
+  
+  // Add validator role if they own a validator and have valid profile
+  if (hasValidator && hasValidProfile) {
     expectedRoles.push(ETHOS_VALIDATOR_ROLE_ID);
   }
   
@@ -1247,10 +1264,12 @@ async function syncUserRoles(guildId: string, userId: string): Promise<{ success
     const profile = await fetchEthosProfileByDiscord(userId);
     
     if ("error" in profile) {
-      console.log(`User ${userId} has no valid Ethos profile, removing score-based and validator roles only`);
+      console.log(`User ${userId} has no valid Ethos profile, removing score-based, validator, and verified profile roles only`);
       
-      // Remove only score-based and validator roles, keep verified role
-      const rolesToRemove = currentEthosRoles.filter(roleId => roleId !== ETHOS_VERIFIED_ROLE_ID);
+      // Remove score-based, validator, and verified profile roles, but keep basic verified role
+      const rolesToRemove = currentEthosRoles.filter(roleId => 
+        roleId !== ETHOS_VERIFIED_ROLE_ID
+      );
       const changes: string[] = [];
       
       for (const roleId of rolesToRemove) {
@@ -1280,10 +1299,12 @@ async function syncUserRoles(guildId: string, userId: string): Promise<{ success
     const isDefaultProfile = profile.score === 1200 && !hasInteractions;
       
     if (profile.score === undefined || typeof profile.score !== 'number' || !hasInteractions || isDefaultProfile) {
-      console.log(`User ${userId} has default/empty profile: score=${profile.score}, reviews=${profile.elements?.totalReviews}, vouches=${profile.elements?.vouchCount}, wallet=${profile.primaryAddress ? 'yes' : 'no'} - removing score-based and validator roles only`);
+      console.log(`User ${userId} has default/empty profile: score=${profile.score}, reviews=${profile.elements?.totalReviews}, vouches=${profile.elements?.vouchCount}, wallet=${profile.primaryAddress ? 'yes' : 'no'} - removing score-based, validator, and verified profile roles only`);
       
-      // Remove only score-based and validator roles, keep verified role
-      const rolesToRemove = currentEthosRoles.filter(roleId => roleId !== ETHOS_VERIFIED_ROLE_ID);
+      // Remove score-based, validator, and verified profile roles, but keep basic verified role
+      const rolesToRemove = currentEthosRoles.filter(roleId => 
+        roleId !== ETHOS_VERIFIED_ROLE_ID
+      );
       const changes: string[] = [];
       
       for (const roleId of rolesToRemove) {
@@ -1310,7 +1331,7 @@ async function syncUserRoles(guildId: string, userId: string): Promise<{ success
     const hasValidator = await checkUserOwnsValidator(userId);
     
     // Get expected roles
-    const expectedRoles = getExpectedRoles(profile.score, hasValidator);
+    const expectedRoles = getExpectedRoles(profile.score, hasValidator, true);
     
     // Compare current vs expected roles
     const rolesToAdd = expectedRoles.filter(roleId => !currentRoles.includes(roleId));
@@ -1359,6 +1380,7 @@ async function syncUserRoles(guildId: string, userId: string): Promise<{ success
 function getRoleNameFromId(roleId: string): string {
   switch (roleId) {
     case ETHOS_VERIFIED_ROLE_ID: return "Verified";
+    case ETHOS_VERIFIED_PROFILE_ROLE_ID: return "Verified Profile";
     case ETHOS_VALIDATOR_ROLE_ID: return "Validator";
     case ETHOS_ROLE_EXEMPLARY: return "Exemplary";
     case ETHOS_ROLE_REPUTABLE: return "Reputable";
