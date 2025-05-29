@@ -14,6 +14,8 @@ const PUBLIC_KEY = Deno.env.get("DISCORD_PUBLIC_KEY");
 const APPLICATION_ID = Deno.env.get("DISCORD_APPLICATION_ID");
 // Hardcoded role ID for Ethos verified users
 const ETHOS_VERIFIED_ROLE_ID = Deno.env.get("ETHOS_VERIFIED_ROLE_ID") || "1367923031040721046"; // Replace with actual role ID in production
+// Validator role ID
+const ETHOS_VALIDATOR_ROLE_ID = "1377477396759842936";
 // Score-based role IDs
 const ETHOS_ROLE_EXEMPLARY = Deno.env.get("ETHOS_ROLE_EXEMPLARY") || "1253205892917231677"; // Score >= 2000
 const ETHOS_ROLE_REPUTABLE = Deno.env.get("ETHOS_ROLE_REPUTABLE") || "1253206005169258537"; // Score >= 1600
@@ -53,6 +55,34 @@ async function checkUserHasEthosProfile(userId: string): Promise<boolean> {
     return profileResponse.ok;
   } catch (error) {
     console.error("Error checking if user has Ethos profile:", error);
+    return false;
+  }
+}
+
+// Function to check if a user owns a validator NFT
+async function checkUserOwnsValidator(userId: string): Promise<boolean> {
+  try {
+    console.log("Checking if Discord user owns validator NFT:", userId);
+    
+    // Make sure we're just using the raw ID without any @ symbol
+    const cleanUserId = userId.replace('@', '').replace('<', '').replace('>', '');
+    const userkey = `service:discord:${cleanUserId}`;
+    
+    // Check if user owns a validator using the new API endpoint
+    const validatorResponse = await fetch(`https://api.ethos.network/api/v1/nfts/user/${userkey}/owns-validator`);
+    
+    if (!validatorResponse.ok) {
+      console.log(`Validator check failed with status: ${validatorResponse.status}`);
+      return false;
+    }
+    
+    const validatorData = await validatorResponse.json();
+    console.log("Validator API Response:", JSON.stringify(validatorData, null, 2));
+    
+    // Return true if the response indicates the user owns a validator
+    return validatorData === true || (validatorData.ok && validatorData.data === true);
+  } catch (error) {
+    console.error("Error checking if user owns validator:", error);
     return false;
   }
 }
@@ -462,6 +492,7 @@ function getRoleNameForScore(score: number): string {
 async function removeAllEthosRoles(guildId: string, userId: string): Promise<boolean> {
   const allRoles = [
     ETHOS_VERIFIED_ROLE_ID,
+    ETHOS_VALIDATOR_ROLE_ID,
     ETHOS_ROLE_EXEMPLARY,
     ETHOS_ROLE_REPUTABLE,
     ETHOS_ROLE_NEUTRAL,
@@ -607,7 +638,7 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
           return {
             type: InteractionResponseType.ChannelMessageWithSource,
             data: {
-              content: "You either don't have a claimed Ethos profile or haven't connected Discord to your Ethos account yet. If you have a profile, please connect Discord at https://app.ethos.network/profile/settings?tab=social",
+              content: "You don't have an Ethos profile OR you haven't connected Discord to your Ethos account yet. Ethos users can connect their Discord account at https://app.ethos.network/profile/settings?tab=social",
               flags: 64 // Ephemeral message
             }
           };
@@ -626,6 +657,17 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
           };
         }
         
+        // Check if user owns a validator NFT and assign validator role
+        const ownsValidator = await checkUserOwnsValidator(userId);
+        let validatorResult: { success: boolean; error?: string } = { success: true };
+        
+        if (ownsValidator) {
+          console.log(`User ${userId} owns a validator NFT, assigning Validator role`);
+          validatorResult = await assignRoleToUser(guildId, userId, ETHOS_VALIDATOR_ROLE_ID);
+        } else {
+          console.log(`User ${userId} does not own a validator NFT`);
+        }
+        
         // Assign score-based role
         const scoreRoleId = getRoleIdForScore(profile.score);
         const roleName = getRoleNameForScore(profile.score);
@@ -642,6 +684,16 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
         } else {
           responseMessage += `You've been verified but there was an error assigning your score role: ${scoreResult.error}`;
           console.error(`Failed to assign score role ${roleName} (${scoreRoleId}) to user ${userId}: ${scoreResult.error}`);
+        }
+        
+        // Add validator role info to response
+        if (ownsValidator) {
+          if (validatorResult.success) {
+            responseMessage += " You've also been assigned the \"Validator\" role.";
+          } else {
+            responseMessage += ` There was an error assigning your Validator role: ${validatorResult.error}`;
+            console.error(`Failed to assign Validator role to user ${userId}: ${validatorResult.error}`);
+          }
         }
         
         return {
