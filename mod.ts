@@ -922,40 +922,6 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
         };
       }
       
-      // Handle ethos_cache_stats command (check cache statistics)
-      else if (commandName === "ethos_cache_stats") {
-        try {
-          const cacheStats = await getCacheStats();
-          const totalEntries = cacheStats.totalCached;
-          const oldestDate = cacheStats.oldestEntry ? new Date(cacheStats.oldestEntry).toLocaleString() : "N/A";
-          const newestDate = cacheStats.newestEntry ? new Date(cacheStats.newestEntry).toLocaleString() : "N/A";
-          
-          const statsMessage = `📊 **Cache Statistics**\n` +
-            `🗂️ Total cached users: ${totalEntries}\n` +
-            `📅 Cache duration: 3 days\n` +
-            `⏰ Oldest entry: ${oldestDate}\n` +
-            `🕐 Newest entry: ${newestDate}\n\n` +
-            `ℹ️ Users are skipped if synced within the last 3 days.`;
-          
-          return {
-            type: InteractionResponseType.ChannelMessageWithSource,
-            data: {
-              content: statsMessage,
-              flags: 64 // Ephemeral message
-            }
-          };
-        } catch (error) {
-          console.error("Error getting cache stats:", error);
-          return {
-            type: InteractionResponseType.ChannelMessageWithSource,
-            data: {
-              content: "❌ Error retrieving cache statistics.",
-              flags: 64 // Ephemeral message
-            }
-          };
-        }
-      }
-      
       // Handle ethos_force_sync command (force sync a specific user, bypassing cache)
       else if (commandName === "ethos_force_sync") {
         // With a User type option, Discord will automatically provide the user ID
@@ -1144,10 +1110,15 @@ serve(async (req) => {
   if (url.pathname === "/sync-status" && req.method === "GET") {
     try {
       const status = getSyncStatus();
+      const cacheStats = await getCacheStats();
       
       return new Response(JSON.stringify({
         success: true,
-        status
+        status,
+        cache: {
+          totalEntries: cacheStats.totalCached,
+          cacheDurationDays: CACHE_DURATION_MS / (24 * 60 * 60 * 1000)
+        }
       }), {
         headers: { "Content-Type": "application/json" }
       });
@@ -1164,6 +1135,56 @@ serve(async (req) => {
     }
   }
   
+  // Handle cache stats endpoint
+  if (url.pathname === "/cache-stats" && req.method === "GET") {
+    try {
+      // Optional: Add authentication here
+      const authHeader = req.headers.get("Authorization");
+      const expectedAuth = Deno.env.get("SYNC_AUTH_TOKEN");
+      
+      if (expectedAuth && authHeader !== `Bearer ${expectedAuth}`) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      
+      const cacheStats = await getCacheStats();
+      
+      return new Response(JSON.stringify({
+        success: true,
+        cache: {
+          totalEntries: cacheStats.totalCached,
+          cacheDurationMs: CACHE_DURATION_MS,
+          cacheDurationDays: CACHE_DURATION_MS / (24 * 60 * 60 * 1000),
+          oldestEntry: cacheStats.oldestEntry,
+          newestEntry: cacheStats.newestEntry,
+          oldestEntryDate: cacheStats.oldestEntry ? new Date(cacheStats.oldestEntry).toISOString() : null,
+          newestEntryDate: cacheStats.newestEntry ? new Date(cacheStats.newestEntry).toISOString() : null
+        }
+      }), {
+        headers: { "Content-Type": "application/json" }
+      });
+      
+    } catch (error) {
+      console.error("Error getting cache stats:", error);
+      return new Response(JSON.stringify({
+        success: false,
+        error: "Failed to get cache stats"
+      }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+  }
+
+  // Health check endpoint
+  if (url.pathname === "/health" && req.method === "GET") {
+    return new Response(JSON.stringify({
+      status: "healthy",
+      timestamp: new Date().toISOString()
+    }), {
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+
   // Handle Discord interactions
   if (req.method === "POST" && url.pathname === "/") {
     try {
@@ -1180,16 +1201,6 @@ serve(async (req) => {
       console.error("Error handling request:", error);
       return new Response("Internal Server Error", { status: 500 });
     }
-  }
-
-  // Health check endpoint
-  if (url.pathname === "/health" && req.method === "GET") {
-    return new Response(JSON.stringify({
-      status: "healthy",
-      timestamp: new Date().toISOString()
-    }), {
-      headers: { "Content-Type": "application/json" }
-    });
   }
 
   return new Response("OK", { status: 200 });
