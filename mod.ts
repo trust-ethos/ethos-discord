@@ -850,134 +850,6 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
         };
       }
       
-      // Handle ethos_sync command (manual role synchronization)
-      else if (commandName === "ethos_sync") {
-        const guildId = interaction.guild_id;
-        
-        if (!guildId) {
-          return {
-            type: InteractionResponseType.ChannelMessageWithSource,
-            data: {
-              content: "This command can only be used in a server.",
-              flags: 64 // Ephemeral message
-            }
-          };
-        }
-        
-        // Check if user has permission to run sync (you might want to add permission checks here)
-        // For now, we'll allow anyone to trigger a sync
-        
-        // Start the sync asynchronously and respond immediately
-        performManualSync(guildId).catch(error => {
-          console.error("[DISCORD] Error in manual sync:", error);
-        });
-        
-        return {
-          type: InteractionResponseType.ChannelMessageWithSource,
-          data: {
-            content: "🔄 Manual role synchronization started! This may take a few minutes. Check the logs for progress.",
-            flags: 64 // Ephemeral message
-          }
-        };
-      }
-      
-      // Handle ethos_sync_stop command (stop running sync)
-      else if (commandName === "ethos_sync_stop") {
-        const stopped = stopSync();
-        
-        return {
-          type: InteractionResponseType.ChannelMessageWithSource,
-          data: {
-            content: stopped ? 
-              "🛑 Stop signal sent to running sync process. It will stop after the current user." :
-              "ℹ️ No sync is currently running.",
-            flags: 64 // Ephemeral message
-          }
-        };
-      }
-      
-      // Handle ethos_sync_status command (check sync status)
-      else if (commandName === "ethos_sync_status") {
-        const status = getSyncStatus();
-        
-        let statusMessage = "";
-        if (status.isRunning) {
-          const minutes = Math.floor(status.duration / 60000);
-          const seconds = Math.floor((status.duration % 60000) / 1000);
-          statusMessage = `🔄 **Sync in progress**\n` +
-            `⏱️ Duration: ${minutes}m ${seconds}s\n` +
-            `👥 Progress: ${status.processedUsers}/${status.totalUsers} users\n` +
-            `🎯 Guild: ${status.currentGuild}\n` +
-            `${status.shouldStop ? "🛑 Stop signal sent" : ""}`;
-        } else {
-          statusMessage = "✅ No sync currently running";
-        }
-        
-        return {
-          type: InteractionResponseType.ChannelMessageWithSource,
-          data: {
-            content: statusMessage,
-            flags: 64 // Ephemeral message
-          }
-        };
-      }
-      
-      // Handle ethos_force_sync command (force sync a specific user, bypassing cache)
-      else if (commandName === "ethos_force_sync") {
-        // With a User type option, Discord will automatically provide the user ID
-        const userId = interaction.data.options?.[0].value?.toString();
-        const guildId = interaction.guild_id;
-        
-        if (!userId || !guildId) {
-          return {
-            type: InteractionResponseType.ChannelMessageWithSource,
-            data: {
-              content: "Please mention a Discord user to force sync!",
-              flags: 64 // Ephemeral
-            }
-          };
-        }
-        
-        try {
-          // Clear cache for this user first
-          await clearUserCache(userId);
-          
-          // Force sync the user (bypass cache)
-          const result = await syncUserRoles(guildId, userId, undefined, undefined, true);
-          
-          if (result.success) {
-            const changesText = result.changes.length > 0 ? 
-              `Changes made: ${result.changes.join(", ")}` : 
-              "No changes needed - roles were already correct.";
-            
-            return {
-              type: InteractionResponseType.ChannelMessageWithSource,
-              data: {
-                content: `✅ **Force sync completed for <@${userId}>**\n${changesText}`,
-                flags: 64 // Ephemeral message
-              }
-            };
-          } else {
-            return {
-              type: InteractionResponseType.ChannelMessageWithSource,
-              data: {
-                content: `❌ **Force sync failed for <@${userId}>**\nCheck logs for details.`,
-                flags: 64 // Ephemeral message
-              }
-            };
-          }
-        } catch (error) {
-          console.error(`Error force syncing user ${userId}:`, error);
-          return {
-            type: InteractionResponseType.ChannelMessageWithSource,
-            data: {
-              content: `❌ **Error during force sync for <@${userId}>**\nCheck logs for details.`,
-              flags: 64 // Ephemeral message
-            }
-          };
-        }
-      }
-      
       // Unknown command
       else {
         return {
@@ -1128,6 +1000,86 @@ serve(async (req) => {
       return new Response(JSON.stringify({
         success: false,
         error: "Failed to get sync status"
+      }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+  }
+  
+  // Handle force sync endpoint for specific users
+  if (url.pathname === "/force-sync" && req.method === "POST") {
+    try {
+      // Optional: Add authentication here
+      const authHeader = req.headers.get("Authorization");
+      const expectedAuth = Deno.env.get("SYNC_AUTH_TOKEN");
+      
+      if (expectedAuth && authHeader !== `Bearer ${expectedAuth}`) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      
+      // Get parameters from request body
+      let guildId: string | undefined;
+      let userId: string | undefined;
+      
+      try {
+        const body = await req.json();
+        guildId = body.guildId;
+        userId = body.userId;
+      } catch {
+        return new Response(JSON.stringify({
+          success: false,
+          error: "Invalid request body. Expected JSON with guildId and userId"
+        }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      
+      if (!userId) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: "userId is required"
+        }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      
+      const targetGuildId = guildId || Deno.env.get("DISCORD_GUILD_ID");
+      if (!targetGuildId) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: "guildId is required (either in request or DISCORD_GUILD_ID env var)"
+        }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      
+      // Clear cache for this user first
+      await clearUserCache(userId);
+      
+      // Force sync the user (bypass cache)
+      const result = await syncUserRoles(targetGuildId, userId, undefined, undefined, true);
+      
+      return new Response(JSON.stringify({
+        success: result.success,
+        userId,
+        guildId: targetGuildId,
+        changes: result.changes,
+        message: result.success ? 
+          (result.changes.length > 0 ? `Applied ${result.changes.length} role changes` : "No changes needed") :
+          "Force sync failed"
+      }), {
+        headers: { "Content-Type": "application/json" }
+      });
+      
+    } catch (error) {
+      console.error("Error in force sync:", error);
+      return new Response(JSON.stringify({
+        success: false,
+        error: "Failed to force sync user"
       }), {
         status: 500,
         headers: { "Content-Type": "application/json" }
