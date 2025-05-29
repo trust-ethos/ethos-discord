@@ -1251,16 +1251,17 @@ async function verifyUserRoles(guildId: string, userId: string): Promise<{ succe
 }
 
 // Function to sync a single user's roles
-async function syncUserRoles(guildId: string, userId: string): Promise<{ success: boolean; changes: string[] }> {
+async function syncUserRoles(guildId: string, userId: string, userNumber?: number, totalUsers?: number): Promise<{ success: boolean; changes: string[] }> {
   try {
-    console.log(`Syncing roles for user: ${userId}`);
+    const progressPrefix = userNumber && totalUsers ? `[${userNumber}/${totalUsers}] ` : '';
+    console.log(`${progressPrefix}Syncing roles for user: ${userId}`);
     
     // Get user's current Discord roles
     const memberUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}`;
     const memberResponse = await discordApiCall(memberUrl, { method: "GET" });
     
     if (!memberResponse.ok) {
-      console.error(`Failed to fetch member ${userId}: ${memberResponse.status}`);
+      console.error(`${progressPrefix}Failed to fetch member ${userId}: ${memberResponse.status}`);
       return { success: false, changes: [] };
     }
     
@@ -1272,7 +1273,7 @@ async function syncUserRoles(guildId: string, userId: string): Promise<{ success
     const profile = await fetchEthosProfileByDiscord(userId);
     
     if ("error" in profile) {
-      console.log(`User ${userId} has no valid Ethos profile, removing score-based, validator, and verified profile roles only`);
+      console.log(`${progressPrefix}User ${userId} has no valid Ethos profile, removing score-based, validator, and verified profile roles only`);
       
       // Remove score-based, validator, and verified profile roles, but keep basic verified role
       const rolesToRemove = currentEthosRoles.filter(roleId => 
@@ -1287,7 +1288,7 @@ async function syncUserRoles(guildId: string, userId: string): Promise<{ success
         if (removeResponse.ok) {
           const roleName = getRoleNameFromId(roleId);
           changes.push(`Removed ${roleName} role (no valid profile)`);
-          console.log(`Removed role ${roleName} from user ${userId} (no valid profile)`);
+          console.log(`${progressPrefix}Removed role ${roleName} from user ${userId} (no valid profile)`);
         }
         
         // Small delay to avoid rate limiting
@@ -1307,7 +1308,7 @@ async function syncUserRoles(guildId: string, userId: string): Promise<{ success
     const isDefaultProfile = profile.score === 1200 && !hasInteractions;
       
     if (profile.score === undefined || typeof profile.score !== 'number' || !hasInteractions || isDefaultProfile) {
-      console.log(`User ${userId} has default/empty profile: score=${profile.score}, reviews=${profile.elements?.totalReviews}, vouches=${profile.elements?.vouchCount}, wallet=${profile.primaryAddress ? 'yes' : 'no'} - removing score-based, validator, and verified profile roles only`);
+      console.log(`${progressPrefix}User ${userId} has default/empty profile: score=${profile.score}, reviews=${profile.elements?.totalReviews}, vouches=${profile.elements?.vouchCount}, wallet=${profile.primaryAddress ? 'yes' : 'no'} - removing score-based, validator, and verified profile roles only`);
       
       // Remove score-based, validator, and verified profile roles, but keep basic verified role
       const rolesToRemove = currentEthosRoles.filter(roleId => 
@@ -1322,7 +1323,7 @@ async function syncUserRoles(guildId: string, userId: string): Promise<{ success
         if (removeResponse.ok) {
           const roleName = getRoleNameFromId(roleId);
           changes.push(`Removed ${roleName} role (default/incomplete profile)`);
-          console.log(`Removed role ${roleName} from user ${userId} (default/incomplete profile)`);
+          console.log(`${progressPrefix}Removed role ${roleName} from user ${userId} (default/incomplete profile)`);
         }
         
         // Small delay to avoid rate limiting
@@ -1333,7 +1334,7 @@ async function syncUserRoles(guildId: string, userId: string): Promise<{ success
     }
     
     // User has a valid profile, proceed with normal role sync
-    console.log(`User ${userId} has valid profile with score ${profile.score} and primaryAddress: ${profile.primaryAddress ? 'yes' : 'no'}`);
+    console.log(`${progressPrefix}User ${userId} has valid profile with score ${profile.score} and primaryAddress: ${profile.primaryAddress ? 'yes' : 'no'}`);
     
     // Check validator status
     const hasValidator = await checkUserOwnsValidator(userId);
@@ -1347,7 +1348,7 @@ async function syncUserRoles(guildId: string, userId: string): Promise<{ success
     
     // Early exit if no changes needed
     if (rolesToAdd.length === 0 && rolesToRemove.length === 0) {
-      console.log(`User ${userId} already has correct roles, no changes needed`);
+      console.log(`${progressPrefix}User ${userId} already has correct roles, no changes needed`);
       return { success: true, changes: [] };
     }
     
@@ -1361,7 +1362,7 @@ async function syncUserRoles(guildId: string, userId: string): Promise<{ success
       if (removeResponse.ok) {
         const roleName = getRoleNameFromId(roleId);
         changes.push(`Removed ${roleName} role`);
-        console.log(`Removed role ${roleName} from user ${userId}`);
+        console.log(`${progressPrefix}Removed role ${roleName} from user ${userId}`);
       }
       
       // Small delay to avoid rate limiting
@@ -1376,7 +1377,7 @@ async function syncUserRoles(guildId: string, userId: string): Promise<{ success
       if (addResponse.ok) {
         const roleName = getRoleNameFromId(roleId);
         changes.push(`Added ${roleName} role`);
-        console.log(`Added role ${roleName} to user ${userId}`);
+        console.log(`${progressPrefix}Added role ${roleName} to user ${userId}`);
       }
       
       // Small delay to avoid rate limiting
@@ -1385,7 +1386,8 @@ async function syncUserRoles(guildId: string, userId: string): Promise<{ success
     
     return { success: true, changes };
   } catch (error) {
-    console.error(`Error syncing user ${userId}:`, error);
+    const progressPrefix = userNumber && totalUsers ? `[${userNumber}/${totalUsers}] ` : '';
+    console.error(`${progressPrefix}Error syncing user ${userId}:`, error);
     return { success: false, changes: [] };
   }
 }
@@ -1457,16 +1459,19 @@ async function performSyncForGuild(guildId: string): Promise<void> {
 
       const batch = verifiedMembers.slice(i, i + BATCH_SIZE);
       
-      console.log(`Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(verifiedMembers.length / BATCH_SIZE)}`);
+      console.log(`Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(verifiedMembers.length / BATCH_SIZE)} (users ${i + 1}-${Math.min(i + BATCH_SIZE, verifiedMembers.length)}/${verifiedMembers.length})`);
       
-      for (const userId of batch) {
+      for (let j = 0; j < batch.length; j++) {
+        const userId = batch[j];
+        const userNumber = i + j + 1; // Current user number
+        
         // Check for stop signal before each user
         if (syncStatus.shouldStop) {
           console.log("🛑 Sync stopped by user request");
           break;
         }
 
-        const result = await syncUserRoles(guildId, userId);
+        const result = await syncUserRoles(guildId, userId, userNumber, verifiedMembers.length);
         syncStatus.processedUsers++;
         
         if (result.success) {
@@ -1474,7 +1479,7 @@ async function performSyncForGuild(guildId: string): Promise<void> {
           totalChanges += result.changes.length;
           
           if (result.changes.length > 0) {
-            console.log(`User ${userId}: ${result.changes.join(", ")}`);
+            console.log(`[${userNumber}/${verifiedMembers.length}] User ${userId}: ${result.changes.join(", ")}`);
           }
         } else {
           errorCount++;
@@ -1595,15 +1600,18 @@ async function performChunkedSyncForGuild(guildId: string, startIndex: number, c
       
       console.log(`${logPrefix}Processing batch ${syncStatus.currentBatch + 1} (${batch.length} users)`);
       
-      for (const userId of batch) {
+      for (let j = 0; j < batch.length; j++) {
+        const userId = batch[j];
+        const userNumber = startIndex + i + j + 1; // Current user number in overall sync
+        
         // Check for stop signal before each user
         if (syncStatus.shouldStop) {
           console.log(`${logPrefix}🛑 Sync stopped by user request`);
           break;
         }
 
-        const result = await syncUserRoles(guildId, userId);
-        syncStatus.processedUsers = startIndex + i + batch.indexOf(userId) + 1;
+        const result = await syncUserRoles(guildId, userId, userNumber, verifiedMembers.length);
+        syncStatus.processedUsers = startIndex + i + j + 1;
         syncStatus.lastProcessedIndex = syncStatus.processedUsers - 1;
         
         if (result.success) {
@@ -1611,7 +1619,7 @@ async function performChunkedSyncForGuild(guildId: string, startIndex: number, c
           totalChanges += result.changes.length;
           
           if (result.changes.length > 0) {
-            console.log(`${logPrefix}👤 User ${userId} (${syncStatus.processedUsers}/${verifiedMembers.length}): ${result.changes.join(", ")}`);
+            console.log(`${logPrefix}👤 User ${userId} (${userNumber}/${verifiedMembers.length}): ${result.changes.join(", ")}`);
           }
         } else {
           errorCount++;
