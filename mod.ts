@@ -9,6 +9,82 @@ import {
   ApplicationCommandType
 } from "./deps.ts";
 
+// ===== CACHING CONFIGURATION =====
+const CACHE_DURATION_MS = 3 * 24 * 60 * 60 * 1000; // 3 days in milliseconds
+const CACHE_KEY_PREFIX = "ethos_user_sync:";
+
+// Initialize Deno KV
+const kv = await Deno.openKv();
+
+// Helper function to get cache key for a user
+function getCacheKey(userId: string): string {
+  return `${CACHE_KEY_PREFIX}${userId}`;
+}
+
+// Helper function to check if user was recently synced successfully
+async function wasRecentlySynced(userId: string): Promise<boolean> {
+  try {
+    const result = await kv.get([getCacheKey(userId)]);
+    if (!result.value) {
+      return false;
+    }
+    
+    const lastSyncTime = result.value as number;
+    const now = Date.now();
+    const timeSinceSync = now - lastSyncTime;
+    
+    return timeSinceSync < CACHE_DURATION_MS;
+  } catch (error) {
+    console.error(`Error checking cache for user ${userId}:`, error);
+    return false; // If cache check fails, don't skip the user
+  }
+}
+
+// Helper function to mark user as successfully synced
+async function markUserSynced(userId: string): Promise<void> {
+  try {
+    await kv.set([getCacheKey(userId)], Date.now());
+  } catch (error) {
+    console.error(`Error updating cache for user ${userId}:`, error);
+    // Don't throw - cache failures shouldn't break the sync
+  }
+}
+
+// Helper function to clear cache for a user (useful for forced updates)
+async function clearUserCache(userId: string): Promise<void> {
+  try {
+    await kv.delete([getCacheKey(userId)]);
+  } catch (error) {
+    console.error(`Error clearing cache for user ${userId}:`, error);
+  }
+}
+
+// Helper function to get cache stats
+async function getCacheStats(): Promise<{ totalCached: number; oldestEntry: number | null; newestEntry: number | null }> {
+  try {
+    let totalCached = 0;
+    let oldestEntry: number | null = null;
+    let newestEntry: number | null = null;
+    
+    for await (const entry of kv.list({ prefix: [CACHE_KEY_PREFIX] })) {
+      totalCached++;
+      const timestamp = entry.value as number;
+      
+      if (oldestEntry === null || timestamp < oldestEntry) {
+        oldestEntry = timestamp;
+      }
+      if (newestEntry === null || timestamp > newestEntry) {
+        newestEntry = timestamp;
+      }
+    }
+    
+    return { totalCached, oldestEntry, newestEntry };
+  } catch (error) {
+    console.error("Error getting cache stats:", error);
+    return { totalCached: 0, oldestEntry: null, newestEntry: null };
+  }
+}
+
 // Load environment variables
 const PUBLIC_KEY = Deno.env.get("DISCORD_PUBLIC_KEY");
 const APPLICATION_ID = Deno.env.get("DISCORD_APPLICATION_ID");
@@ -551,6 +627,9 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
           };
         }
         
+        // Clear cache for manual verification to ensure fresh check
+        await clearUserCache(userId);
+        
         // Use the optimized verification logic
         const verifyResult = await verifyUserRoles(guildId, userId);
         
@@ -841,6 +920,96 @@ async function handleInteraction(interaction: APIInteraction): Promise<APIIntera
             flags: 64 // Ephemeral message
           }
         };
+      }
+      
+      // Handle ethos_cache_stats command (check cache statistics)
+      else if (commandName === "ethos_cache_stats") {
+        try {
+          const cacheStats = await getCacheStats();
+          const totalEntries = cacheStats.totalCached;
+          const oldestDate = cacheStats.oldestEntry ? new Date(cacheStats.oldestEntry).toLocaleString() : "N/A";
+          const newestDate = cacheStats.newestEntry ? new Date(cacheStats.newestEntry).toLocaleString() : "N/A";
+          
+          const statsMessage = `📊 **Cache Statistics**\n` +
+            `🗂️ Total cached users: ${totalEntries}\n` +
+            `📅 Cache duration: 3 days\n` +
+            `⏰ Oldest entry: ${oldestDate}\n` +
+            `🕐 Newest entry: ${newestDate}\n\n` +
+            `ℹ️ Users are skipped if synced within the last 3 days.`;
+          
+          return {
+            type: InteractionResponseType.ChannelMessageWithSource,
+            data: {
+              content: statsMessage,
+              flags: 64 // Ephemeral message
+            }
+          };
+        } catch (error) {
+          console.error("Error getting cache stats:", error);
+          return {
+            type: InteractionResponseType.ChannelMessageWithSource,
+            data: {
+              content: "❌ Error retrieving cache statistics.",
+              flags: 64 // Ephemeral message
+            }
+          };
+        }
+      }
+      
+      // Handle ethos_force_sync command (force sync a specific user, bypassing cache)
+      else if (commandName === "ethos_force_sync") {
+        // With a User type option, Discord will automatically provide the user ID
+        const userId = interaction.data.options?.[0].value?.toString();
+        const guildId = interaction.guild_id;
+        
+        if (!userId || !guildId) {
+          return {
+            type: InteractionResponseType.ChannelMessageWithSource,
+            data: {
+              content: "Please mention a Discord user to force sync!",
+              flags: 64 // Ephemeral
+            }
+          };
+        }
+        
+        try {
+          // Clear cache for this user first
+          await clearUserCache(userId);
+          
+          // Force sync the user (bypass cache)
+          const result = await syncUserRoles(guildId, userId, undefined, undefined, true);
+          
+          if (result.success) {
+            const changesText = result.changes.length > 0 ? 
+              `Changes made: ${result.changes.join(", ")}` : 
+              "No changes needed - roles were already correct.";
+            
+            return {
+              type: InteractionResponseType.ChannelMessageWithSource,
+              data: {
+                content: `✅ **Force sync completed for <@${userId}>**\n${changesText}`,
+                flags: 64 // Ephemeral message
+              }
+            };
+          } else {
+            return {
+              type: InteractionResponseType.ChannelMessageWithSource,
+              data: {
+                content: `❌ **Force sync failed for <@${userId}>**\nCheck logs for details.`,
+                flags: 64 // Ephemeral message
+              }
+            };
+          }
+        } catch (error) {
+          console.error(`Error force syncing user ${userId}:`, error);
+          return {
+            type: InteractionResponseType.ChannelMessageWithSource,
+            data: {
+              content: `❌ **Error during force sync for <@${userId}>**\nCheck logs for details.`,
+              flags: 64 // Ephemeral message
+            }
+          };
+        }
       }
       
       // Unknown command
@@ -1208,7 +1377,9 @@ async function verifyUserRoles(guildId: string, userId: string): Promise<{ succe
     // Early exit if no changes needed
     if (rolesToAdd.length === 0 && rolesToRemove.length === 0) {
       console.log(`[VERIFY] User ${userId} already has correct roles, no changes needed`);
-      return { success: true, changes: [], profile };
+      // Mark as synced since roles are correct
+      await markUserSynced(userId);
+      return { success: true, changes: [] };
     }
     
     const changes: string[] = [];
@@ -1243,6 +1414,8 @@ async function verifyUserRoles(guildId: string, userId: string): Promise<{ succe
       await new Promise(resolve => setTimeout(resolve, SYNC_CONFIG.DELAY_BETWEEN_ROLE_OPS));
     }
     
+    // Mark as synced after successful role updates
+    await markUserSynced(userId);
     return { success: true, changes, profile };
   } catch (error) {
     console.error(`[VERIFY] Error verifying user ${userId}:`, error);
@@ -1251,9 +1424,19 @@ async function verifyUserRoles(guildId: string, userId: string): Promise<{ succe
 }
 
 // Function to sync a single user's roles
-async function syncUserRoles(guildId: string, userId: string, userNumber?: number, totalUsers?: number): Promise<{ success: boolean; changes: string[] }> {
+async function syncUserRoles(guildId: string, userId: string, userNumber?: number, totalUsers?: number, forceSync = false): Promise<{ success: boolean; changes: string[]; skipped?: boolean }> {
   try {
     const progressPrefix = userNumber && totalUsers ? `[${userNumber}/${totalUsers}] ` : '';
+    
+    // Check cache first (unless forced)
+    if (!forceSync) {
+      const recentlySynced = await wasRecentlySynced(userId);
+      if (recentlySynced) {
+        console.log(`${progressPrefix}⏭️ Skipping user ${userId} (synced within last 3 days)`);
+        return { success: true, changes: [], skipped: true };
+      }
+    }
+    
     console.log(`${progressPrefix}Syncing roles for user: ${userId}`);
     
     // Get user's current Discord roles
@@ -1295,6 +1478,8 @@ async function syncUserRoles(guildId: string, userId: string, userNumber?: numbe
         await new Promise(resolve => setTimeout(resolve, SYNC_CONFIG.DELAY_BETWEEN_ROLE_OPS));
       }
       
+      // Mark as synced even if profile is invalid (so we don't keep retrying)
+      await markUserSynced(userId);
       return { success: true, changes };
     }
     
@@ -1330,6 +1515,8 @@ async function syncUserRoles(guildId: string, userId: string, userNumber?: numbe
         await new Promise(resolve => setTimeout(resolve, SYNC_CONFIG.DELAY_BETWEEN_ROLE_OPS));
       }
       
+      // Mark as synced even if profile is incomplete (so we don't keep retrying)
+      await markUserSynced(userId);
       return { success: true, changes };
     }
     
@@ -1349,6 +1536,8 @@ async function syncUserRoles(guildId: string, userId: string, userNumber?: numbe
     // Early exit if no changes needed
     if (rolesToAdd.length === 0 && rolesToRemove.length === 0) {
       console.log(`${progressPrefix}User ${userId} already has correct roles, no changes needed`);
+      // Mark as synced since roles are correct
+      await markUserSynced(userId);
       return { success: true, changes: [] };
     }
     
@@ -1384,6 +1573,8 @@ async function syncUserRoles(guildId: string, userId: string, userNumber?: numbe
       await new Promise(resolve => setTimeout(resolve, SYNC_CONFIG.DELAY_BETWEEN_ROLE_OPS));
     }
     
+    // Mark as synced after successful role updates
+    await markUserSynced(userId);
     return { success: true, changes };
   } catch (error) {
     const progressPrefix = userNumber && totalUsers ? `[${userNumber}/${totalUsers}] ` : '';
@@ -1446,6 +1637,7 @@ async function performSyncForGuild(guildId: string): Promise<void> {
     
     let successCount = 0;
     let errorCount = 0;
+    let skippedCount = 0;
     let totalChanges = 0;
     
     // Process users in batches to avoid overwhelming the API
@@ -1476,10 +1668,14 @@ async function performSyncForGuild(guildId: string): Promise<void> {
         
         if (result.success) {
           successCount++;
-          totalChanges += result.changes.length;
-          
-          if (result.changes.length > 0) {
-            console.log(`[${userNumber}/${verifiedMembers.length}] User ${userId}: ${result.changes.join(", ")}`);
+          if (result.skipped) {
+            skippedCount++;
+          } else {
+            totalChanges += result.changes.length;
+            
+            if (result.changes.length > 0) {
+              console.log(`👤 User ${userId} (${userNumber}/${verifiedMembers.length}): ${result.changes.join(", ")}`);
+            }
           }
         } else {
           errorCount++;
@@ -1501,8 +1697,13 @@ async function performSyncForGuild(guildId: string): Promise<void> {
     console.log(`=== Sync ${status} ===`);
     console.log(`Duration: ${duration}s`);
     console.log(`Processed: ${successCount} users`);
+    console.log(`Skipped (cached): ${skippedCount} users`);
     console.log(`Errors: ${errorCount} users`);
     console.log(`Total changes: ${totalChanges}`);
+    
+    // Log cache stats
+    const cacheStats = await getCacheStats();
+    console.log(`Total cache entries: ${cacheStats.totalCached}`);
     
   } catch (error) {
     console.error("Error during sync:", error);
@@ -1573,6 +1774,7 @@ async function performChunkedSyncForGuild(guildId: string, startIndex: number, c
     
     let successCount = 0;
     let errorCount = 0;
+    let skippedCount = 0;
     let totalChanges = 0;
     
     // Process users in batches within the chunk
@@ -1616,10 +1818,14 @@ async function performChunkedSyncForGuild(guildId: string, startIndex: number, c
         
         if (result.success) {
           successCount++;
-          totalChanges += result.changes.length;
-          
-          if (result.changes.length > 0) {
-            console.log(`${logPrefix}👤 User ${userId} (${userNumber}/${verifiedMembers.length}): ${result.changes.join(", ")}`);
+          if (result.skipped) {
+            skippedCount++;
+          } else {
+            totalChanges += result.changes.length;
+            
+            if (result.changes.length > 0) {
+              console.log(`${logPrefix}👤 User ${userId} (${userNumber}/${verifiedMembers.length}): ${result.changes.join(", ")}`);
+            }
           }
         } else {
           errorCount++;
@@ -1643,9 +1849,16 @@ async function performChunkedSyncForGuild(guildId: string, startIndex: number, c
     console.log(`${logPrefix}=== Chunk ${isCompleted ? 'complete' : 'processed'} ===`);
     console.log(`${logPrefix}Duration: ${duration}s`);
     console.log(`${logPrefix}Chunk processed: ${successCount} users`);
+    console.log(`${logPrefix}Chunk skipped (cached): ${skippedCount} users`);
     console.log(`${logPrefix}Chunk errors: ${errorCount} users`);
     console.log(`${logPrefix}Chunk changes: ${totalChanges}`);
     console.log(`${logPrefix}Overall progress: ${nextIndex}/${verifiedMembers.length} (${((nextIndex/verifiedMembers.length)*100).toFixed(1)}%)`);
+    
+    // Log cache stats for completed chunks
+    if (isCompleted) {
+      const cacheStats = await getCacheStats();
+      console.log(`${logPrefix}Total cache entries: ${cacheStats.totalCached}`);
+    }
     
     if (!isCompleted) {
       console.log(`${logPrefix}🔄 Next chunk should start at index ${nextIndex}`);
