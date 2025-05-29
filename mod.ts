@@ -103,7 +103,7 @@ async function discordApiCall(url: string, options: RequestInit): Promise<Respon
   };
 
   // Maximum number of retries
-  const MAX_RETRIES = 3;
+  const MAX_RETRIES = 5; // Increased from 3
   let retries = 0;
 
   while (retries < MAX_RETRIES) {
@@ -116,15 +116,38 @@ async function discordApiCall(url: string, options: RequestInit): Promise<Respon
       // If rate limited, wait and retry
       if (response.status === 429) {
         const retryAfter = parseInt(response.headers.get("Retry-After") || "1");
-        console.log(`Rate limited. Waiting ${retryAfter}s before retrying...`);
-        await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+        const isGlobal = response.headers.get("X-RateLimit-Global") === "true";
+        const scope = response.headers.get("X-RateLimit-Scope") || "unknown";
+        
+        console.warn(`⚠️ Rate limited (${isGlobal ? 'GLOBAL' : 'route-specific'}, scope: ${scope}). Waiting ${retryAfter}s before retrying... (attempt ${retries + 1}/${MAX_RETRIES})`);
+        
+        // Add extra buffer for global rate limits
+        const waitTime = isGlobal ? retryAfter + 1 : retryAfter;
+        await new Promise(resolve => setTimeout(resolve, waitTime * 1000));
         retries++;
         continue;
+      }
+
+      // Log rate limit headers for monitoring
+      const remaining = response.headers.get("X-RateLimit-Remaining");
+      const resetAfter = response.headers.get("X-RateLimit-Reset-After");
+      if (remaining && parseInt(remaining) < 5) {
+        console.warn(`⚠️ Rate limit warning: Only ${remaining} requests remaining, resets in ${resetAfter}s`);
       }
 
       return response;
     } catch (error) {
       console.error("Error making Discord API call:", error);
+      retries++;
+      
+      // Add exponential backoff for network errors
+      if (retries < MAX_RETRIES) {
+        const backoffDelay = Math.min(1000 * Math.pow(2, retries), 30000); // Max 30s
+        console.log(`Network error, waiting ${backoffDelay}ms before retry ${retries}/${MAX_RETRIES}`);
+        await new Promise(resolve => setTimeout(resolve, backoffDelay));
+        continue;
+      }
+      
       throw error;
     }
   }
@@ -545,8 +568,8 @@ async function removeAllEthosRoles(guildId: string, userId: string): Promise<boo
         console.log(`Successfully removed role ${roleId}`);
       }
       
-      // Add a small delay between requests to avoid rate limiting
-      await new Promise(resolve => setTimeout(resolve, 250));
+      // Small delay to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
     
     return true;
@@ -1283,7 +1306,7 @@ async function syncUserRoles(guildId: string, userId: string): Promise<{ success
         }
         
         // Small delay to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 250));
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
       
       return { success: true, changes };
@@ -1318,7 +1341,7 @@ async function syncUserRoles(guildId: string, userId: string): Promise<{ success
         }
         
         // Small delay to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 250));
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
       
       return { success: true, changes };
@@ -1351,7 +1374,7 @@ async function syncUserRoles(guildId: string, userId: string): Promise<{ success
       }
       
       // Small delay to avoid rate limiting
-      await new Promise(resolve => setTimeout(resolve, 250));
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
     
     // Add roles that should be there
@@ -1366,7 +1389,7 @@ async function syncUserRoles(guildId: string, userId: string): Promise<{ success
       }
       
       // Small delay to avoid rate limiting
-      await new Promise(resolve => setTimeout(resolve, 250));
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
     
     return { success: true, changes };
@@ -1479,7 +1502,7 @@ async function performSyncForGuild(guildId: string): Promise<void> {
         }
         
         // Delay between users to respect rate limits
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 2000));
       }
       
       // Break out of batch loop if stopped
