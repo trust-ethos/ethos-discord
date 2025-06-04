@@ -1336,6 +1336,126 @@ serve(async (req) => {
     }
   }
 
+  // Handle validator verification trigger endpoint
+  if (url.pathname === "/trigger-validator-check" && req.method === "POST") {
+    try {
+      // Optional: Add authentication here
+      const authHeader = req.headers.get("Authorization");
+      const expectedAuth = Deno.env.get("SYNC_AUTH_TOKEN");
+
+      if (expectedAuth && authHeader !== `Bearer ${expectedAuth}`) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+
+      // Get guild ID from request body
+      let guildId: string | undefined;
+
+      try {
+        const body = await req.json();
+        guildId = body.guildId;
+      } catch {
+        // No body or invalid JSON, use default
+      }
+
+      // Trigger the validator verification asynchronously
+      triggerValidatorVerification(guildId).catch((error) => {
+        console.error("[HTTP] Error in triggered validator verification:", error);
+      });
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          message: "Validator verification triggered",
+          guildId: guildId || Deno.env.get("DISCORD_GUILD_ID") || "default",
+        }),
+        {
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    } catch (error) {
+      console.error("Error triggering validator verification:", error);
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: "Failed to trigger validator verification",
+        }),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }
+  }
+
+  // Handle validator verification stop endpoint
+  if (url.pathname === "/stop-validator-check" && req.method === "POST") {
+    try {
+      // Optional: Add authentication here
+      const authHeader = req.headers.get("Authorization");
+      const expectedAuth = Deno.env.get("SYNC_AUTH_TOKEN");
+
+      if (expectedAuth && authHeader !== `Bearer ${expectedAuth}`) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+
+      const stopped = stopValidatorCheck();
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          message: stopped
+            ? "Stop signal sent to running validator verification"
+            : "No validator verification currently running",
+          wasStopped: stopped,
+        }),
+        {
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    } catch (error) {
+      console.error("Error stopping validator verification:", error);
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: "Failed to stop validator verification",
+        }),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }
+  }
+
+  // Handle validator verification status endpoint
+  if (url.pathname === "/validator-check-status" && req.method === "GET") {
+    try {
+      const status = getValidatorCheckStatus();
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          status,
+        }),
+        {
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    } catch (error) {
+      console.error("Error getting validator check status:", error);
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: "Failed to get validator check status",
+        }),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }
+  }
+
   // Health check endpoint
   if (url.pathname === "/health" && req.method === "GET") {
     return new Response(
@@ -2223,4 +2343,354 @@ function getRoleNameFromId(roleId: string): string {
   }
 }
 
-// Manual sync function that can be triggered by command
+// ===== VALIDATOR VERIFICATION SYSTEM =====
+
+// Configuration for validator verification
+const VALIDATOR_CHECK_CONFIG = {
+  BATCH_SIZE: 5, // Smaller batches for validator checks
+  DELAY_BETWEEN_USERS: 3000, // 3 seconds between checks
+  DELAY_BETWEEN_BATCHES: 10000, // 10 seconds between batches
+  MAX_EXECUTION_TIME: 10 * 60 * 1000, // 10 minutes max execution
+};
+
+// Global validator check state
+let validatorCheckStatus = {
+  isRunning: false,
+  shouldStop: false,
+  currentGuild: null as string | null,
+  startTime: null as number | null,
+  processedUsers: 0,
+  totalUsers: 0,
+  demotedUsers: 0,
+  lastProcessedIndex: 0,
+  checkId: null as string | null,
+};
+
+// Function to get all validator role IDs
+function getAllValidatorRoles(): string[] {
+  return [
+    ETHOS_VALIDATOR_EXEMPLARY,
+    ETHOS_VALIDATOR_REPUTABLE,
+    ETHOS_VALIDATOR_NEUTRAL,
+    ETHOS_VALIDATOR_QUESTIONABLE,
+  ];
+}
+
+// Function to get equivalent regular role for a validator role
+function getRegularRoleForValidator(validatorRoleId: string): string {
+  switch (validatorRoleId) {
+    case ETHOS_VALIDATOR_EXEMPLARY:
+      return ETHOS_ROLE_EXEMPLARY;
+    case ETHOS_VALIDATOR_REPUTABLE:
+      return ETHOS_ROLE_REPUTABLE;
+    case ETHOS_VALIDATOR_NEUTRAL:
+      return ETHOS_ROLE_NEUTRAL;
+    case ETHOS_VALIDATOR_QUESTIONABLE:
+      return ETHOS_ROLE_QUESTIONABLE;
+    default:
+      return ETHOS_ROLE_UNTRUSTED; // Fallback
+  }
+}
+
+// Function to get all users with validator roles
+async function getUsersWithValidatorRoles(guildId: string): Promise<{userId: string, validatorRoles: string[]}[]> {
+  try {
+    console.log("[VALIDATOR-CHECK] Fetching users with validator roles from guild:", guildId);
+
+    // Get all members from the guild
+    const url = `https://discord.com/api/v10/guilds/${guildId}/members?limit=1000`;
+    const response = await discordApiCall(url, { method: "GET" });
+
+    if (!response.ok) {
+      console.error(`[VALIDATOR-CHECK] Failed to fetch guild members: ${response.status}`);
+      return [];
+    }
+
+    const members = await response.json();
+    const validatorRoleIds = getAllValidatorRoles();
+    const usersWithValidatorRoles: {userId: string, validatorRoles: string[]}[] = [];
+
+    // Filter members who have any validator roles
+    for (const member of members) {
+      const memberValidatorRoles = member.roles.filter((roleId: string) => 
+        validatorRoleIds.includes(roleId)
+      );
+      
+      if (memberValidatorRoles.length > 0) {
+        usersWithValidatorRoles.push({
+          userId: member.user.id,
+          validatorRoles: memberValidatorRoles
+        });
+      }
+    }
+
+    console.log(`[VALIDATOR-CHECK] Found ${usersWithValidatorRoles.length} users with validator roles`);
+    return usersWithValidatorRoles;
+  } catch (error) {
+    console.error("[VALIDATOR-CHECK] Error fetching users with validator roles:", error);
+    return [];
+  }
+}
+
+// Function to verify and potentially demote a single user
+async function verifyUserValidator(
+  guildId: string, 
+  userId: string, 
+  validatorRoles: string[],
+  userNumber?: number,
+  totalUsers?: number
+): Promise<{ success: boolean; changes: string[]; demoted: boolean }> {
+  try {
+    const progressPrefix = userNumber && totalUsers ? `[${userNumber}/${totalUsers}] ` : "";
+    console.log(`${progressPrefix}[VALIDATOR-CHECK] Checking validator status for user: ${userId}`);
+
+    // Check if user still owns a validator NFT
+    const ownsValidator = await checkUserOwnsValidator(userId);
+
+    if (ownsValidator) {
+      console.log(`${progressPrefix}[VALIDATOR-CHECK] User ${userId} still owns validator, no changes needed`);
+      return { success: true, changes: [], demoted: false };
+    }
+
+    console.log(`${progressPrefix}[VALIDATOR-CHECK] User ${userId} no longer owns validator, demoting from validator roles`);
+
+    // User no longer owns validator, need to demote them
+    const changes: string[] = [];
+
+    // Get user's current Ethos profile to determine correct regular role
+    const profile = await fetchEthosProfileByDiscord(userId);
+    
+    let targetRegularRole = ETHOS_ROLE_UNTRUSTED; // Default fallback
+    
+    if (!("error" in profile) && typeof profile.score === "number") {
+      // User has valid profile, determine role by score
+      targetRegularRole = getRoleIdForScore(profile.score);
+    }
+
+    // Remove all validator roles
+    for (const validatorRoleId of validatorRoles) {
+      const removeUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${validatorRoleId}`;
+      const removeResponse = await discordApiCall(removeUrl, { method: "DELETE" });
+
+      if (removeResponse.ok) {
+        const roleName = getRoleNameFromId(validatorRoleId);
+        changes.push(`Removed ${roleName} role`);
+        console.log(`${progressPrefix}[VALIDATOR-CHECK] Removed validator role ${roleName} from user ${userId}`);
+      } else {
+        console.error(`${progressPrefix}[VALIDATOR-CHECK] Failed to remove validator role ${validatorRoleId} from user ${userId}: ${removeResponse.status}`);
+      }
+
+      // Delay between role operations
+      await new Promise(resolve => setTimeout(resolve, VALIDATOR_CHECK_CONFIG.DELAY_BETWEEN_USERS / 4));
+    }
+
+    // Add the appropriate regular role
+    const addUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${targetRegularRole}`;
+    const addResponse = await discordApiCall(addUrl, { method: "PUT" });
+
+    if (addResponse.ok) {
+      const roleName = getRoleNameFromId(targetRegularRole);
+      changes.push(`Added ${roleName} role`);
+      console.log(`${progressPrefix}[VALIDATOR-CHECK] Added regular role ${roleName} to user ${userId}`);
+    } else {
+      console.error(`${progressPrefix}[VALIDATOR-CHECK] Failed to add regular role ${targetRegularRole} to user ${userId}: ${addResponse.status}`);
+    }
+
+    return { success: true, changes, demoted: true };
+
+  } catch (error) {
+    const progressPrefix = userNumber && totalUsers ? `[${userNumber}/${totalUsers}] ` : "";
+    console.error(`${progressPrefix}[VALIDATOR-CHECK] Error verifying validator for user ${userId}:`, error);
+    return { success: false, changes: [], demoted: false };
+  }
+}
+
+// Main validator verification function
+async function performValidatorVerification(guildId: string): Promise<void> {
+  // Check if already running
+  if (validatorCheckStatus.isRunning) {
+    console.log("[VALIDATOR-CHECK] Validator verification already in progress, skipping");
+    return;
+  }
+
+  // Initialize status
+  validatorCheckStatus.isRunning = true;
+  validatorCheckStatus.shouldStop = false;
+  validatorCheckStatus.currentGuild = guildId;
+  validatorCheckStatus.startTime = Date.now();
+  validatorCheckStatus.processedUsers = 0;
+  validatorCheckStatus.totalUsers = 0;
+  validatorCheckStatus.demotedUsers = 0;
+  validatorCheckStatus.checkId = `validator_check_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+  console.log("[VALIDATOR-CHECK] === Starting validator verification ===");
+  const startTime = Date.now();
+
+  try {
+    // Get all users with validator roles
+    const usersWithValidatorRoles = await getUsersWithValidatorRoles(guildId);
+
+    if (usersWithValidatorRoles.length === 0) {
+      console.log("[VALIDATOR-CHECK] No users with validator roles found, verification complete");
+      return;
+    }
+
+    validatorCheckStatus.totalUsers = usersWithValidatorRoles.length;
+    console.log(`[VALIDATOR-CHECK] Starting verification for ${usersWithValidatorRoles.length} users with validator roles`);
+
+    let successCount = 0;
+    let errorCount = 0;
+    let demotedCount = 0;
+    let totalChanges = 0;
+
+    // Process users in batches
+    const BATCH_SIZE = VALIDATOR_CHECK_CONFIG.BATCH_SIZE;
+    for (let i = 0; i < usersWithValidatorRoles.length; i += BATCH_SIZE) {
+      // Check for stop signal
+      if (validatorCheckStatus.shouldStop) {
+        console.log("[VALIDATOR-CHECK] 🛑 Verification stopped by user request");
+        break;
+      }
+
+      // Check execution time limit
+      const elapsed = Date.now() - startTime;
+      if (elapsed > VALIDATOR_CHECK_CONFIG.MAX_EXECUTION_TIME) {
+        console.warn(`[VALIDATOR-CHECK] ⏰ Execution time limit reached (${elapsed}ms), stopping verification`);
+        break;
+      }
+
+      const batch = usersWithValidatorRoles.slice(i, i + BATCH_SIZE);
+      console.log(
+        `[VALIDATOR-CHECK] Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(usersWithValidatorRoles.length / BATCH_SIZE)} (users ${i + 1}-${Math.min(i + BATCH_SIZE, usersWithValidatorRoles.length)}/${usersWithValidatorRoles.length})`
+      );
+
+      for (let j = 0; j < batch.length; j++) {
+        const { userId, validatorRoles } = batch[j];
+        const userNumber = i + j + 1;
+
+        // Check for stop signal before each user
+        if (validatorCheckStatus.shouldStop) {
+          console.log("[VALIDATOR-CHECK] 🛑 Verification stopped by user request");
+          break;
+        }
+
+        const result = await verifyUserValidator(guildId, userId, validatorRoles, userNumber, usersWithValidatorRoles.length);
+        validatorCheckStatus.processedUsers++;
+
+        if (result.success) {
+          successCount++;
+          if (result.demoted) {
+            demotedCount++;
+            validatorCheckStatus.demotedUsers++;
+          }
+          totalChanges += result.changes.length;
+
+          if (result.changes.length > 0) {
+            console.log(`[VALIDATOR-CHECK] 👤 User ${userId} (${userNumber}/${usersWithValidatorRoles.length}): ${result.changes.join(", ")}`);
+          }
+        } else {
+          errorCount++;
+        }
+
+        // Delay between users
+        await new Promise(resolve => setTimeout(resolve, VALIDATOR_CHECK_CONFIG.DELAY_BETWEEN_USERS));
+      }
+
+      // Break out of batch loop if stopped
+      if (validatorCheckStatus.shouldStop) break;
+
+      // Longer delay between batches
+      await new Promise(resolve => setTimeout(resolve, VALIDATOR_CHECK_CONFIG.DELAY_BETWEEN_BATCHES));
+    }
+
+    const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+    const status = validatorCheckStatus.shouldStop ? "stopped" : "complete";
+    console.log(`[VALIDATOR-CHECK] === Validator verification ${status} ===`);
+    console.log(`[VALIDATOR-CHECK] Duration: ${duration}s`);
+    console.log(`[VALIDATOR-CHECK] Processed: ${successCount} users`);
+    console.log(`[VALIDATOR-CHECK] Demoted: ${demotedCount} users`);
+    console.log(`[VALIDATOR-CHECK] Errors: ${errorCount} users`);
+    console.log(`[VALIDATOR-CHECK] Total changes: ${totalChanges}`);
+
+  } catch (error) {
+    console.error("[VALIDATOR-CHECK] Error during validator verification:", error);
+  } finally {
+    // Reset status
+    validatorCheckStatus = {
+      isRunning: false,
+      shouldStop: false,
+      currentGuild: null,
+      startTime: null,
+      processedUsers: 0,
+      totalUsers: 0,
+      demotedUsers: 0,
+      lastProcessedIndex: 0,
+      checkId: null,
+    };
+  }
+}
+
+// Function to stop validator verification
+export function stopValidatorCheck(): boolean {
+  if (validatorCheckStatus.isRunning) {
+    console.log("[VALIDATOR-CHECK] Stop signal sent to running validator verification");
+    validatorCheckStatus.shouldStop = true;
+    return true;
+  }
+  return false;
+}
+
+// Function to get validator check status
+export function getValidatorCheckStatus() {
+  return {
+    ...validatorCheckStatus,
+    duration: validatorCheckStatus.startTime ? Date.now() - validatorCheckStatus.startTime : 0,
+  };
+}
+
+// Function to trigger validator verification
+export async function triggerValidatorVerification(guildId?: string): Promise<void> {
+  const targetGuildId = guildId || Deno.env.get("DISCORD_GUILD_ID");
+
+  if (!targetGuildId) {
+    console.error("[VALIDATOR-CHECK] No guild ID provided and DISCORD_GUILD_ID environment variable not set");
+    return;
+  }
+
+  console.log(`[VALIDATOR-CHECK] Triggering validator verification for guild: ${targetGuildId}`);
+  await performValidatorVerification(targetGuildId);
+}
+
+// ===== AUTOMATED CRON-BASED VALIDATOR VERIFICATION =====
+
+// Set up automated hourly validator verification using Deno.cron
+// This only runs in production deployments on Deno Deploy
+const ENABLE_AUTO_VALIDATOR_CHECK = Deno.env.get("ENABLE_AUTO_VALIDATOR_CHECK") === "true";
+
+if (ENABLE_AUTO_VALIDATOR_CHECK) {
+  console.log("🕐 Setting up automated hourly validator verification with Deno.cron");
+  
+  Deno.cron("Hourly Validator Verification", "0 * * * *", {
+    backoffSchedule: [1000, 5000, 10000], // Retry after 1s, 5s, 10s if failed
+  }, async () => {
+    console.log("🔍 [CRON] Starting automated hourly validator verification");
+    
+    try {
+      const guildId = Deno.env.get("DISCORD_GUILD_ID");
+      if (!guildId) {
+        console.error("[CRON] DISCORD_GUILD_ID environment variable not set for cron job");
+        return;
+      }
+      
+      await performValidatorVerification(guildId);
+      console.log("✅ [CRON] Automated validator verification completed successfully");
+    } catch (error) {
+      console.error("❌ [CRON] Error in automated validator verification:", error);
+      throw error; // This will trigger the retry mechanism
+    }
+  });
+  
+  console.log("✅ Automated hourly validator verification is enabled");
+} else {
+  console.log("ℹ️ Automated validator verification is disabled (set ENABLE_AUTO_VALIDATOR_CHECK=true to enable)");
+}
