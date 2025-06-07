@@ -311,6 +311,82 @@ async function assignRoleToUser(
   }
 }
 
+// Function to send follow-up message after deferred response
+async function sendFollowUpMessage(
+  interactionId: string,
+  interactionToken: string,
+  content: string,
+): Promise<void> {
+  try {
+    const url = `https://discord.com/api/v10/webhooks/${APPLICATION_ID}/${interactionToken}`;
+
+    const response = await discordApiCall(url, {
+      method: "POST",
+      body: JSON.stringify({
+        content,
+        flags: 64, // Ephemeral message
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      console.error(`Failed to send follow-up message: ${response.status} ${errorData}`);
+      throw new Error(`Failed to send follow-up message: ${response.status}`);
+    }
+  } catch (error) {
+    console.error("Error sending follow-up message:", error);
+    throw error;
+  }
+}
+
+// Function to send follow-up embed message after deferred response
+async function sendFollowUpEmbedMessage(
+  interactionId: string,
+  interactionToken: string,
+  embed: any,
+): Promise<void> {
+  try {
+    const url = `https://discord.com/api/v10/webhooks/${APPLICATION_ID}/${interactionToken}`;
+
+    const response = await discordApiCall(url, {
+      method: "POST",
+      body: JSON.stringify({
+        embeds: [embed],
+        flags: 64, // Ephemeral message
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      console.error(`Failed to send follow-up embed: ${response.status} ${errorData}`);
+      throw new Error(`Failed to send follow-up embed: ${response.status}`);
+    }
+  } catch (error) {
+    console.error("Error sending follow-up embed message:", error);
+    throw error;
+  }
+}
+
+// Helper function to safely send follow-up messages with token check
+async function safeFollowUp(
+  interaction: { id: string; token?: string },
+  content: string,
+): Promise<void> {
+  if (interaction.token) {
+    await sendFollowUpMessage(interaction.id, interaction.token, content);
+  }
+}
+
+// Helper function to safely send follow-up embeds with token check
+async function safeFollowUpEmbed(
+  interaction: { id: string; token?: string },
+  embed: any,
+): Promise<void> {
+  if (interaction.token) {
+    await sendFollowUpEmbedMessage(interaction.id, interaction.token, embed);
+  }
+}
+
 // Function to fetch Ethos profile by Discord user ID
 async function fetchEthosProfileByDiscord(
   userId: string,
@@ -761,73 +837,85 @@ async function handleInteraction(
           };
         }
 
-        // Clear cache for manual verification to ensure fresh check
-        await clearUserCache(userId);
-
-        // Use the optimized verification logic (always forces sync, bypasses cache)
-        const verifyResult = await verifyUserRoles(guildId, userId);
-
-        if (!verifyResult.success) {
-          // Check if it's a profile validation error
-          if (verifyResult.profile && "error" in verifyResult.profile) {
-            return {
-              type: InteractionResponseType.ChannelMessageWithSource,
-              data: {
-                content: verifyResult.profile.error,
-                flags: 64, // Ephemeral message
-              },
-            };
-          }
-
-          return {
-            type: InteractionResponseType.ChannelMessageWithSource,
-            data: {
-              content:
-                "You don't have an Ethos profile OR you haven't connected Discord to your Ethos account yet. Ethos users can connect their Discord account at https://app.ethos.network/profile/settings?tab=social",
-              flags: 64, // Ephemeral message
-            },
-          };
-        }
-
-        const profile = verifyResult.profile;
-        const ownsValidator = await checkUserOwnsValidator(userId);
-        const scoreName = getRoleNameForScore(profile.score);
-
-        // Create response message based on changes made
-        let responseMessage = "✅ Verification successful! ";
-
-        if (verifyResult.changes.length > 0) {
-          responseMessage += `Role changes: ${
-            verifyResult.changes.join(", ")
-          }. `;
-        } else {
-          responseMessage += "Your roles were already up to date. ";
-        }
-
-        // Show the appropriate role information
-        if (ownsValidator) {
-          const validatorRoleId = getValidatorRoleIdForScore(profile.score);
-          if (validatorRoleId) {
-            const validatorRoleName = getRoleNameFromId(validatorRoleId);
-            responseMessage +=
-              `You have a ${scoreName} score of ${profile.score} and the ${validatorRoleName} role.`;
-          } else {
-            // Untrusted users get regular untrusted role even with validator
-            responseMessage +=
-              `You have a ${scoreName} score of ${profile.score}. Note: Untrusted users receive the regular Untrusted role even with a validator NFT.`;
-          }
-        } else {
-          responseMessage +=
-            `You have a ${scoreName} score of ${profile.score}.`;
-        }
-
-        return {
-          type: InteractionResponseType.ChannelMessageWithSource,
+        // Immediately respond with "thinking" to prevent timeout
+        // This gives us up to 15 minutes to complete the operation
+        const deferredResponse = {
+          type: InteractionResponseType.DeferredChannelMessageWithSource,
           data: {
-            content: responseMessage,
             flags: 64, // Ephemeral message
           },
         };
+
+        // Perform the verification asynchronously and send follow-up
+        (async () => {
+          try {
+            // Clear cache for manual verification to ensure fresh check
+            await clearUserCache(userId);
+
+            // Use the optimized verification logic (always forces sync, bypasses cache)
+            const verifyResult = await verifyUserRoles(guildId, userId);
+
+            let followUpContent: string;
+
+            if (!verifyResult.success) {
+              // Check if it's a profile validation error
+              if (verifyResult.profile && "error" in verifyResult.profile) {
+                followUpContent = verifyResult.profile.error;
+              } else {
+                followUpContent =
+                  "You don't have an Ethos profile OR you haven't connected Discord to your Ethos account yet. Ethos users can connect their Discord account at https://app.ethos.network/profile/settings?tab=social";
+              }
+            } else {
+              const profile = verifyResult.profile;
+              const ownsValidator = await checkUserOwnsValidator(userId);
+              const scoreName = getRoleNameForScore(profile.score);
+
+              // Create response message based on changes made
+              followUpContent = "✅ Verification successful! ";
+
+              if (verifyResult.changes.length > 0) {
+                followUpContent += `Role changes: ${
+                  verifyResult.changes.join(", ")
+                }. `;
+              } else {
+                followUpContent += "Your roles were already up to date. ";
+              }
+
+              // Show the appropriate role information
+              if (ownsValidator) {
+                const validatorRoleId = getValidatorRoleIdForScore(profile.score);
+                if (validatorRoleId) {
+                  const validatorRoleName = getRoleNameFromId(validatorRoleId);
+                  followUpContent +=
+                    `You have a ${scoreName} score of ${profile.score} and the ${validatorRoleName} role.`;
+                } else {
+                  // Untrusted users get regular untrusted role even with validator
+                  followUpContent +=
+                    `You have a ${scoreName} score of ${profile.score}. Note: Untrusted users receive the regular Untrusted role even with a validator NFT.`;
+                }
+              } else {
+                followUpContent +=
+                  `You have a ${scoreName} score of ${profile.score}.`;
+              }
+            }
+
+            // Send follow-up message with the result
+            await safeFollowUp(interaction, followUpContent);
+
+          } catch (error) {
+            console.error("Error in async ethos_verify:", error);
+            
+            // Send error follow-up message
+            const errorMessage = "❌ An error occurred while verifying your profile. Please try again later.";
+            try {
+              await safeFollowUp(interaction, errorMessage);
+            } catch (followUpError) {
+              console.error("Error sending follow-up message:", followUpError);
+            }
+          }
+        })();
+
+        return deferredResponse;
       } // Handle ethos command (Discord profiles)
       else if (commandName === "ethos") {
         // With a User type option, Discord will automatically provide the user ID
@@ -842,54 +930,58 @@ async function handleInteraction(
           };
         }
 
-        console.log("Discord user ID from interaction:", userId);
-
-        // Get the Discord user information
-        const userData = interaction.data.resolved?.users?.[userId];
-        const username = userData?.username || "Unknown User";
-        // Use display name (global_name) if available, otherwise use username
-        const displayName = userData?.global_name || username;
-
-        console.log("Discord username:", username);
-        console.log("Discord display name:", displayName);
-
-        // Get user's Discord avatar URL if available
-        let avatarUrl: string | undefined = undefined;
-        if (userData?.avatar) {
-          // Discord avatar format: https://cdn.discordapp.com/avatars/{user.id}/{user.avatar}.png
-          avatarUrl =
-            `https://cdn.discordapp.com/avatars/${userId}/${userData.avatar}.png`;
-        }
-
-        const profile = await fetchEthosProfileByDiscord(userId, avatarUrl);
-
-        if ("error" in profile) {
-          return {
-            type: InteractionResponseType.ChannelMessageWithSource,
-            data: {
-              content: profile.error,
-              flags: 64, // Ephemeral
-            },
-          };
-        }
-
-        // Display the display name in the title
-        const title = `Ethos profile for ${displayName}`;
-
-        // Use the primary address for the profile URL if available, otherwise fall back to Discord
-        let profileUrl;
-        if (profile.primaryAddress) {
-          profileUrl =
-            `https://app.ethos.network/profile/${profile.primaryAddress}?src=discord-agent`;
-        } else {
-          profileUrl =
-            `https://app.ethos.network/profile/discord/${profile.userId}?src=discord-agent`;
-        }
-
-        return {
-          type: InteractionResponseType.ChannelMessageWithSource,
+        // Immediately respond with "thinking" to prevent timeout
+        const deferredResponse = {
+          type: InteractionResponseType.DeferredChannelMessageWithSource,
           data: {
-            embeds: [{
+            flags: 64, // Ephemeral
+          },
+        };
+
+        // Process asynchronously and send follow-up
+        (async () => {
+          try {
+            console.log("Discord user ID from interaction:", userId);
+
+            // Get the Discord user information
+            const userData = interaction.data.resolved?.users?.[userId];
+            const username = userData?.username || "Unknown User";
+            // Use display name (global_name) if available, otherwise use username
+            const displayName = userData?.global_name || username;
+
+            console.log("Discord username:", username);
+            console.log("Discord display name:", displayName);
+
+            // Get user's Discord avatar URL if available
+            let avatarUrl: string | undefined = undefined;
+            if (userData?.avatar) {
+              // Discord avatar format: https://cdn.discordapp.com/avatars/{user.id}/{user.avatar}.png
+              avatarUrl =
+                `https://cdn.discordapp.com/avatars/${userId}/${userData.avatar}.png`;
+            }
+
+            const profile = await fetchEthosProfileByDiscord(userId, avatarUrl);
+
+            if ("error" in profile) {
+              await sendFollowUpMessage(interaction.id, interaction.token, profile.error);
+              return;
+            }
+
+            // Display the display name in the title
+            const title = `Ethos profile for ${displayName}`;
+
+            // Use the primary address for the profile URL if available, otherwise fall back to Discord
+            let profileUrl;
+            if (profile.primaryAddress) {
+              profileUrl =
+                `https://app.ethos.network/profile/${profile.primaryAddress}?src=discord-agent`;
+            } else {
+              profileUrl =
+                `https://app.ethos.network/profile/discord/${profile.userId}?src=discord-agent`;
+            }
+
+            // Send follow-up with embed
+            await sendFollowUpEmbedMessage(interaction.id, interaction.token, {
               title,
               url: profileUrl,
               description: `${displayName} is considered **${
@@ -933,9 +1025,21 @@ async function handleInteraction(
                 text: "Data from https://app.ethos.network",
               },
               timestamp: new Date().toISOString(),
-            }],
-          },
-        };
+            });
+
+          } catch (error) {
+            console.error("Error in async ethos command:", error);
+            
+            try {
+              await sendFollowUpMessage(interaction.id, interaction.token, 
+                "❌ An error occurred while fetching the profile. Please try again later.");
+            } catch (followUpError) {
+              console.error("Error sending follow-up message:", followUpError);
+            }
+          }
+        })();
+
+        return deferredResponse;
       } // Handle ethosx command (Twitter profiles)
       else if (commandName === "ethosx") {
         const twitterHandle = interaction.data.options?.[0].value?.toString();
@@ -949,26 +1053,30 @@ async function handleInteraction(
           };
         }
 
-        const profile = await fetchEthosProfileByTwitter(twitterHandle);
-
-        if ("error" in profile) {
-          return {
-            type: InteractionResponseType.ChannelMessageWithSource,
-            data: {
-              content: profile.error,
-              flags: 64, // Ephemeral
-            },
-          };
-        }
-
-        const title = `Ethos profile for @${profile.handle}`;
-        const profileUrl =
-          `https://app.ethos.network/profile/x/${profile.handle}?src=discord-agent`;
-
-        return {
-          type: InteractionResponseType.ChannelMessageWithSource,
+        // Immediately respond with "thinking" to prevent timeout
+        const deferredResponse = {
+          type: InteractionResponseType.DeferredChannelMessageWithSource,
           data: {
-            embeds: [{
+            flags: 64, // Ephemeral
+          },
+        };
+
+        // Process asynchronously and send follow-up
+        (async () => {
+          try {
+            const profile = await fetchEthosProfileByTwitter(twitterHandle);
+
+            if ("error" in profile) {
+              await sendFollowUpMessage(interaction.id, interaction.token, profile.error);
+              return;
+            }
+
+            const title = `Ethos profile for @${profile.handle}`;
+            const profileUrl =
+              `https://app.ethos.network/profile/x/${profile.handle}?src=discord-agent`;
+
+            // Send follow-up with embed
+            await sendFollowUpEmbedMessage(interaction.id, interaction.token, {
               title,
               url: profileUrl,
               description: `${profile.name} is considered **${
@@ -1010,9 +1118,21 @@ async function handleInteraction(
                 text: "Data from https://app.ethos.network",
               },
               timestamp: new Date().toISOString(),
-            }],
-          },
-        };
+            });
+
+          } catch (error) {
+            console.error("Error in async ethosx command:", error);
+            
+            try {
+              await sendFollowUpMessage(interaction.id, interaction.token, 
+                "❌ An error occurred while fetching the profile. Please try again later.");
+            } catch (followUpError) {
+              console.error("Error sending follow-up message:", followUpError);
+            }
+          }
+        })();
+
+        return deferredResponse;
       } // Unknown command
       else {
         return {
