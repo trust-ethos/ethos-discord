@@ -40,10 +40,10 @@ try {
 // Test Stats API  
 console.log("\n📈 Testing Stats API:");
 try {
-  const statsResponse = await fetch(`https://api.ethos.network/api/v2/users/by/x`, {
+  const statsResponse = await fetch(`https://api.ethos.network/api/v2/users/by/discord`, {
     method: "POST", 
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ accountIdsOrUsernames: [userkey] })
+    body: JSON.stringify({ discordIds: [testUserId] })  // Use raw Discord ID, not userkey
   });
 
   console.log(`Status: ${statsResponse.status} ${statsResponse.statusText}`);

@@ -3097,7 +3097,7 @@ async function fetchEthosProfilesBatch(userIds: string[]): Promise<Map<string, a
   try {
     console.log(`[BATCH] Fetching profiles for ${userIds.length} users`);
     
-    // Convert Discord user IDs to userkeys
+    // Convert Discord user IDs to userkeys for score API
     const userkeys = userIds.map(id => `service:discord:${id}`);
     
     // Batch fetch scores and stats (up to 500 users each)
@@ -3107,10 +3107,10 @@ async function fetchEthosProfilesBatch(userIds: string[]): Promise<Map<string, a
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userkeys })
       }),
-      fetch(`https://api.ethos.network/api/v2/users/by/x`, {
+      fetch(`https://api.ethos.network/api/v2/users/by/discord`, {
         method: "POST", 
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountIdsOrUsernames: userkeys })
+        body: JSON.stringify({ discordIds: userIds })  // Use raw Discord IDs
       })
     ]);
 
@@ -3188,15 +3188,22 @@ async function fetchEthosProfilesBatch(userIds: string[]): Promise<Map<string, a
         for (const userStats of statsArray) {
           if (!userStats) continue;
           
-          // Extract Discord ID from userkeys
+          // Extract Discord ID from userkeys  
           const discordUserkey = userStats.userkeys?.find((uk: string) => uk.startsWith('service:discord:'));
           if (discordUserkey) {
             const userId = discordUserkey.replace('service:discord:', '');
             const existing = results.get(userId) || { hasProfile: false };
             
-            const totalReviews = userStats.stats?.review?.received || 0;
-            const vouchCount = userStats.stats?.vouch?.count?.received || 0;
-            const positivePercentage = userStats.stats?.review?.positiveReviewPercentage || 0;
+            // Handle new Discord API response structure
+            const totalReviews = (userStats.stats?.review?.received?.positive || 0) + 
+                                (userStats.stats?.review?.received?.negative || 0) + 
+                                (userStats.stats?.review?.received?.neutral || 0);
+            const positiveReviews = userStats.stats?.review?.received?.positive || 0;
+            const vouchCount = userStats.stats?.vouch?.received?.count || 0;
+            const positivePercentage = totalReviews > 0 ? (positiveReviews / totalReviews) * 100 : 0;
+            
+            // Check if user has any Ethereum addresses (indicates primary address exists)
+            const hasEthAddress = userStats.userkeys?.some((uk: string) => uk.startsWith('address:'));
             
             results.set(userId, {
               ...existing,
@@ -3205,11 +3212,11 @@ async function fetchEthosProfilesBatch(userIds: string[]): Promise<Map<string, a
                 vouchCount,
                 positivePercentage,
               },
-              primaryAddress: userStats.primaryAddress
+              primaryAddress: hasEthAddress ? "detected" : undefined
             });
             
             usersWithStats.add(userId);
-            console.log(`[BATCH] User ${userId}: reviews=${totalReviews}, vouches=${vouchCount}, address=${userStats.primaryAddress ? 'yes' : 'no'}`);
+            console.log(`[BATCH] User ${userId}: reviews=${totalReviews}, vouches=${vouchCount}, address=${hasEthAddress ? 'yes' : 'no'}`);
           }
         }
         
