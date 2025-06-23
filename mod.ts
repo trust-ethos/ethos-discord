@@ -3116,54 +3116,107 @@ async function fetchEthosProfilesBatch(userIds: string[]): Promise<Map<string, a
 
     const results = new Map<string, any>();
 
-    // Process scores response
+    // Process scores response with better error handling
     if (scoresResponse.ok) {
-      const scoresData = await scoresResponse.json();
-      console.log(`[BATCH] Got scores for ${Object.keys(scoresData).length} users`);
-      
-      for (const [userkey, scoreData] of Object.entries(scoresData)) {
-        const userId = userkey.replace('service:discord:', '');
-        results.set(userId, { 
-          score: scoreData.score, 
-          level: scoreData.level,
-          hasProfile: true 
-        });
+      try {
+        const scoresData = await scoresResponse.json();
+        console.log(`[BATCH] Scores response structure:`, Object.keys(scoresData).slice(0, 3));
+        
+        // Handle different possible response structures
+        const scoreEntries = scoresData.data || scoresData;
+        const scoreCount = Array.isArray(scoreEntries) ? scoreEntries.length : Object.keys(scoreEntries).length;
+        console.log(`[BATCH] Got scores for ${scoreCount} users`);
+        
+        if (Array.isArray(scoreEntries)) {
+          // Array format: [{userkey: "service:discord:123", score: 1500, ...}, ...]
+          for (const scoreEntry of scoreEntries) {
+            if (scoreEntry.userkey && scoreEntry.userkey.startsWith('service:discord:')) {
+              const userId = scoreEntry.userkey.replace('service:discord:', '');
+              results.set(userId, { 
+                score: scoreEntry.score, 
+                level: scoreEntry.level,
+                hasProfile: true 
+              });
+              console.log(`[BATCH] User ${userId}: score=${scoreEntry.score}, level=${scoreEntry.level}`);
+            }
+          }
+        } else {
+          // Object format: {"service:discord:123": {score: 1500, ...}, ...}
+          for (const [userkey, scoreData] of Object.entries(scoreEntries)) {
+            if (userkey.startsWith('service:discord:')) {
+              const userId = userkey.replace('service:discord:', '');
+              const data = scoreData as any;
+              results.set(userId, { 
+                score: data.score, 
+                level: data.level,
+                hasProfile: true 
+              });
+              console.log(`[BATCH] User ${userId}: score=${data.score}, level=${data.level}`);
+            }
+          }
+        }
+      } catch (error) {
+        console.error(`[BATCH] Error parsing scores response:`, error);
+        console.log(`[BATCH] Scores response text:`, await scoresResponse.text());
       }
+    } else {
+      console.error(`[BATCH] Scores API failed: ${scoresResponse.status} ${scoresResponse.statusText}`);
     }
 
-    // Process stats response  
+    // Process stats response with better error handling
     if (statsResponse.ok) {
-      const statsData = await statsResponse.json();
-      console.log(`[BATCH] Got stats for ${statsData.length} users`);
-      
-      for (const userStats of statsData) {
-        // Extract Discord ID from userkeys
-        const discordUserkey = userStats.userkeys?.find(uk => uk.startsWith('service:discord:'));
-        if (discordUserkey) {
-          const userId = discordUserkey.replace('service:discord:', '');
-          const existing = results.get(userId) || { hasProfile: false };
+      try {
+        const statsData = await statsResponse.json();
+        console.log(`[BATCH] Stats response structure:`, Array.isArray(statsData) ? 'array' : 'object');
+        
+        // Handle different possible response structures
+        const statsEntries = statsData.data || statsData;
+        const statsArray = Array.isArray(statsEntries) ? statsEntries : [statsEntries];
+        console.log(`[BATCH] Got stats for ${statsArray.length} users`);
+        
+        for (const userStats of statsArray) {
+          if (!userStats) continue;
           
-          results.set(userId, {
-            ...existing,
-            elements: {
-              totalReviews: userStats.stats?.review?.received || 0,
-              vouchCount: userStats.stats?.vouch?.count?.received || 0,
-              positivePercentage: userStats.stats?.review?.positiveReviewPercentage || 0,
-            },
-            primaryAddress: userStats.primaryAddress
-          });
+          // Extract Discord ID from userkeys
+          const discordUserkey = userStats.userkeys?.find((uk: string) => uk.startsWith('service:discord:'));
+          if (discordUserkey) {
+            const userId = discordUserkey.replace('service:discord:', '');
+            const existing = results.get(userId) || { hasProfile: false };
+            
+            const totalReviews = userStats.stats?.review?.received || 0;
+            const vouchCount = userStats.stats?.vouch?.count?.received || 0;
+            const positivePercentage = userStats.stats?.review?.positiveReviewPercentage || 0;
+            
+            results.set(userId, {
+              ...existing,
+              elements: {
+                totalReviews,
+                vouchCount,
+                positivePercentage,
+              },
+              primaryAddress: userStats.primaryAddress
+            });
+            
+            console.log(`[BATCH] User ${userId}: reviews=${totalReviews}, vouches=${vouchCount}, address=${userStats.primaryAddress ? 'yes' : 'no'}`);
+          }
         }
+      } catch (error) {
+        console.error(`[BATCH] Error parsing stats response:`, error);
+        console.log(`[BATCH] Stats response text:`, await statsResponse.text());
       }
+    } else {
+      console.error(`[BATCH] Stats API failed: ${statsResponse.status} ${statsResponse.statusText}`);
     }
 
     // For users not found in API responses, mark as no profile
     for (const userId of userIds) {
       if (!results.has(userId)) {
         results.set(userId, { hasProfile: false, error: "No profile found" });
+        console.log(`[BATCH] User ${userId}: No profile found`);
       }
     }
 
-    console.log(`[BATCH] Processed ${results.size} total users`);
+    console.log(`[BATCH] Final results: ${results.size} total users processed`);
     return results;
     
   } catch (error) {
@@ -3250,9 +3303,15 @@ async function syncUserRolesBatch(
     }
 
     // Batch fetch validator status for users with valid profiles
+    // FIX: Include users with score 0 and any hasProfile flag
     const usersWithProfiles = Array.from(allProfileData.entries())
-      .filter(([_, profile]) => profile.hasProfile && profile.score)
+      .filter(([_, profile]) => profile.hasProfile && profile.score !== undefined)
       .map(([userId]) => userId);
+
+    console.log(`[BATCH-SYNC] Profile data summary:`);
+    for (const [userId, profile] of allProfileData.entries()) {
+      console.log(`[BATCH-SYNC] User ${userId}: hasProfile=${profile.hasProfile}, score=${profile.score}, elements=${JSON.stringify(profile.elements)}`);
+    }
 
     const validatorStatuses = new Map<string, boolean>();
     if (usersWithProfiles.length > 0) {
@@ -3266,6 +3325,7 @@ async function syncUserRolesBatch(
         // Check each user's validator status
         const batchPromises = batch.map(async (userId) => {
           const hasValidator = await checkUserOwnsValidator(userId);
+          console.log(`[BATCH-SYNC] User ${userId} validator check: ${hasValidator}`);
           return [userId, hasValidator] as [string, boolean];
         });
         
@@ -3311,6 +3371,11 @@ async function syncUserRolesBatch(
         // Determine expected roles based on profile data
         let expectedRoles = [ETHOS_VERIFIED_ROLE_ID]; // Always has basic verified role
         
+        console.log(`[BATCH-SYNC] User ${userId} role calculation:`);
+        console.log(`[BATCH-SYNC]   Profile: hasProfile=${profile?.hasProfile}, score=${profile?.score}`);
+        console.log(`[BATCH-SYNC]   Elements: ${JSON.stringify(profile?.elements)}`);
+        console.log(`[BATCH-SYNC]   Primary address: ${profile?.primaryAddress}`);
+        
         if (profile?.hasProfile && profile.score !== undefined) {
           // Apply same validation as individual sync
           const hasInteractions = (profile.elements?.totalReviews > 0) ||
@@ -3319,22 +3384,39 @@ async function syncUserRolesBatch(
           
           const isDefaultProfile = profile.score === 1200 && !hasInteractions;
           
+          console.log(`[BATCH-SYNC]   hasInteractions=${hasInteractions}, isDefaultProfile=${isDefaultProfile}`);
+          
           if (hasInteractions && !isDefaultProfile) {
             // Has valid profile
             expectedRoles.push(ETHOS_VERIFIED_PROFILE_ROLE_ID);
             
             const hasValidator = validatorStatuses.get(userId) || false;
+            console.log(`[BATCH-SYNC]   hasValidator=${hasValidator}`);
+            
             const scoreRoles = getExpectedRoles(profile.score, hasValidator, true);
             expectedRoles = scoreRoles; // This includes verified + verified profile + score role
+            
+            console.log(`[BATCH-SYNC]   Final expected roles: ${expectedRoles.map(id => getRoleNameFromId(id)).join(', ')}`);
+          } else {
+            console.log(`[BATCH-SYNC]   Profile invalid - keeping only basic verified role`);
           }
+        } else {
+          console.log(`[BATCH-SYNC]   No profile found - keeping only basic verified role`);
         }
 
         // Calculate role changes
+        console.log(`[BATCH-SYNC]   Current Ethos roles: ${currentEthosRoles.map(id => getRoleNameFromId(id)).join(', ')}`);
+        console.log(`[BATCH-SYNC]   Expected roles: ${expectedRoles.map(id => getRoleNameFromId(id)).join(', ')}`);
+        
         const rolesToAdd = expectedRoles.filter(roleId => !currentRoles.includes(roleId));
         const rolesToRemove = currentEthosRoles.filter(roleId => !expectedRoles.includes(roleId));
 
+        console.log(`[BATCH-SYNC]   Roles to add: ${rolesToAdd.map(id => getRoleNameFromId(id)).join(', ') || 'none'}`);
+        console.log(`[BATCH-SYNC]   Roles to remove: ${rolesToRemove.map(id => getRoleNameFromId(id)).join(', ') || 'none'}`);
+
         if (rolesToAdd.length === 0 && rolesToRemove.length === 0) {
           // Mark as synced since roles are correct
+          console.log(`[BATCH-SYNC]   No changes needed for user ${userId}`);
           await markUserSynced(userId);
           continue;
         }
