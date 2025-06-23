@@ -14,7 +14,14 @@ const CACHE_DURATION_MS = 3 * 24 * 60 * 60 * 1000; // 3 days in milliseconds
 const CACHE_KEY_PREFIX = "ethos_user_sync:";
 
 // Initialize Deno KV
-const kv = await Deno.openKv();
+let kv: Deno.Kv | null = null;
+try {
+  kv = await Deno.openKv();
+  console.log("✅ Deno KV initialized successfully");
+} catch (error) {
+  console.warn("⚠️ Deno KV failed to initialize:", error.message);
+  console.warn("⚠️ Caching features will be disabled");
+}
 
 // Helper function to get cache key for a user
 function getCacheKey(userId: string): string {
@@ -23,6 +30,8 @@ function getCacheKey(userId: string): string {
 
 // Helper function to check if user was recently synced successfully
 async function wasRecentlySynced(userId: string): Promise<boolean> {
+  if (!kv) return false; // No cache available
+  
   try {
     const result = await kv.get([getCacheKey(userId)]);
     if (!result.value) {
@@ -42,6 +51,8 @@ async function wasRecentlySynced(userId: string): Promise<boolean> {
 
 // Helper function to mark user as successfully synced
 async function markUserSynced(userId: string): Promise<void> {
+  if (!kv) return; // No cache available
+  
   try {
     await kv.set([getCacheKey(userId)], Date.now());
   } catch (error) {
@@ -52,6 +63,8 @@ async function markUserSynced(userId: string): Promise<void> {
 
 // Helper function to clear cache for a user (useful for forced updates)
 async function clearUserCache(userId: string): Promise<void> {
+  if (!kv) return; // No cache available
+  
   try {
     await kv.delete([getCacheKey(userId)]);
   } catch (error) {
@@ -67,6 +80,8 @@ async function getCacheStats(): Promise<
     newestEntry: number | null;
   }
 > {
+  if (!kv) return { totalCached: 0, oldestEntry: null, newestEntry: null };
+  
   try {
     let totalCached = 0;
     let oldestEntry: number | null = null;
@@ -129,36 +144,7 @@ function isDiscordHandle(handle: string): boolean {
   return !handle.startsWith("@") || handle.includes("#");
 }
 
-// Function to check if a Discord user has an Ethos profile
-async function checkUserHasEthosProfile(userId: string): Promise<boolean> {
-  try {
-    console.log(
-      "Checking if Discord user with ID has an Ethos profile:",
-      userId,
-    );
 
-    // Make sure we're just using the raw ID without any @ symbol
-    const cleanUserId = userId.replace("@", "").replace("<", "").replace(
-      ">",
-      "",
-    );
-    console.log("Clean User ID:", cleanUserId);
-
-    // Use the Ethos API with the Discord ID - ensure proper format
-    const userkey = `service:discord:${cleanUserId}`;
-
-    // First fetch the user's addresses to see if they have an Ethos profile
-    const profileResponse = await fetch(
-      `https://api.ethos.network/api/v1/score/${userkey}`,
-    );
-
-    // If we get a 200 OK response, the user has a profile
-    return profileResponse.ok;
-  } catch (error) {
-    console.error("Error checking if user has Ethos profile:", error);
-    return false;
-  }
-}
 
 // Function to check if a user owns a validator NFT
 async function checkUserOwnsValidator(userId: string): Promise<boolean> {
@@ -198,6 +184,57 @@ async function checkUserOwnsValidator(userId: string): Promise<boolean> {
   }
 }
 
+// Enhanced rate limiting state
+let rateLimitState = {
+  isGloballyRateLimited: false,
+  globalRateLimitUntil: 0,
+  routeRateLimits: new Map<string, { remaining: number; resetAt: number }>(),
+  adaptiveDelayMultiplier: 1,
+  lastRateLimitTime: 0,
+};
+
+// Function to get route key for rate limiting
+function getRouteKey(url: string, method: string): string {
+  const urlObj = new URL(url);
+  // Create a simplified route key for similar endpoints
+  const path = urlObj.pathname
+    .replace(/\/\d+/g, '/:id') // Replace numeric IDs
+    .replace(/\/guilds\/\d+\/members\/\d+/, '/guilds/:guild_id/members/:user_id');
+  return `${method}:${path}`;
+}
+
+// Function to get rate limit status for monitoring
+export function getRateLimitStatus() {
+  const now = Date.now();
+  return {
+    isGloballyRateLimited: rateLimitState.isGloballyRateLimited,
+    globalRateLimitUntil: rateLimitState.globalRateLimitUntil,
+    globalRateLimitWaitTime: rateLimitState.isGloballyRateLimited 
+      ? Math.max(0, rateLimitState.globalRateLimitUntil - now)
+      : 0,
+    adaptiveDelayMultiplier: rateLimitState.adaptiveDelayMultiplier,
+    timeSinceLastRateLimit: now - rateLimitState.lastRateLimitTime,
+    routeRateLimits: Array.from(rateLimitState.routeRateLimits.entries()).map(([route, data]) => ({
+      route,
+      remaining: data.remaining,
+      resetAt: data.resetAt,
+      waitTime: Math.max(0, data.resetAt - now)
+    }))
+  };
+}
+
+// Function to reset rate limit state (for manual intervention)
+export function resetRateLimitState() {
+  rateLimitState = {
+    isGloballyRateLimited: false,
+    globalRateLimitUntil: 0,
+    routeRateLimits: new Map(),
+    adaptiveDelayMultiplier: 1,
+    lastRateLimitTime: 0,
+  };
+  console.log("🔄 Rate limit state reset");
+}
+
 // Add this utility function for Discord API calls with rate limit handling
 async function discordApiCall(
   url: string,
@@ -208,6 +245,36 @@ async function discordApiCall(
     throw new Error("Missing Discord token");
   }
 
+  const method = options.method || "GET";
+  const routeKey = getRouteKey(url, method);
+
+  // Check global rate limit
+  if (rateLimitState.isGloballyRateLimited && Date.now() < rateLimitState.globalRateLimitUntil) {
+    const waitTime = rateLimitState.globalRateLimitUntil - Date.now();
+    console.warn(`🌍 Global rate limit active, waiting ${waitTime}ms`);
+    await new Promise(resolve => setTimeout(resolve, waitTime));
+    rateLimitState.isGloballyRateLimited = false;
+  }
+
+  // Check route-specific rate limit
+  const routeLimit = rateLimitState.routeRateLimits.get(routeKey);
+  if (routeLimit && routeLimit.remaining <= 1 && Date.now() < routeLimit.resetAt) {
+    const waitTime = routeLimit.resetAt - Date.now() + 1000; // Add 1s buffer
+    console.warn(`🛣️ Route rate limit active for ${routeKey}, waiting ${waitTime}ms`);
+    await new Promise(resolve => setTimeout(resolve, waitTime));
+  }
+
+  // Apply adaptive delay if we've been rate limited recently
+  const timeSinceLastRateLimit = Date.now() - rateLimitState.lastRateLimitTime;
+  if (timeSinceLastRateLimit < SYNC_CONFIG.RATE_LIMIT_COOLDOWN) {
+    const adaptiveDelay = Math.min(
+      SYNC_CONFIG.DELAY_BETWEEN_ROLE_OPS * rateLimitState.adaptiveDelayMultiplier,
+      SYNC_CONFIG.MAX_ADAPTIVE_DELAY
+    );
+    console.log(`🎯 Adaptive delay: ${adaptiveDelay}ms (multiplier: ${rateLimitState.adaptiveDelayMultiplier.toFixed(2)})`);
+    await new Promise(resolve => setTimeout(resolve, adaptiveDelay));
+  }
+
   // Set up headers
   const headers = {
     "Authorization": `Bot ${DISCORD_TOKEN_VAL}`,
@@ -216,7 +283,7 @@ async function discordApiCall(
   };
 
   // Maximum number of retries
-  const MAX_RETRIES = 5; // Increased from 3
+  const MAX_RETRIES = 7; // Increased for better reliability
   let retries = 0;
 
   while (retries < MAX_RETRIES) {
@@ -226,35 +293,75 @@ async function discordApiCall(
         headers,
       });
 
-      // If rate limited, wait and retry
+      // Update rate limit tracking from response headers
+      const remaining = parseInt(response.headers.get("X-RateLimit-Remaining") || "50");
+      const resetAfter = parseFloat(response.headers.get("X-RateLimit-Reset-After") || "1");
+      const resetAt = Date.now() + (resetAfter * 1000);
+
+      // Update route-specific rate limit info
+      rateLimitState.routeRateLimits.set(routeKey, {
+        remaining: remaining,
+        resetAt: resetAt
+      });
+
+      // If rate limited, handle it
       if (response.status === 429) {
         const retryAfter = parseInt(response.headers.get("Retry-After") || "1");
         const isGlobal = response.headers.get("X-RateLimit-Global") === "true";
         const scope = response.headers.get("X-RateLimit-Scope") || "unknown";
+
+        // Update rate limit state
+        rateLimitState.lastRateLimitTime = Date.now();
+        rateLimitState.adaptiveDelayMultiplier = Math.min(
+          rateLimitState.adaptiveDelayMultiplier * SYNC_CONFIG.ADAPTIVE_DELAY_MULTIPLIER,
+          5 // Max 5x multiplier
+        );
+
+        if (isGlobal) {
+          rateLimitState.isGloballyRateLimited = true;
+          rateLimitState.globalRateLimitUntil = Date.now() + (retryAfter * 1000) + 2000; // 2s buffer
+        }
 
         console.warn(
           `⚠️ Rate limited (${
             isGlobal ? "GLOBAL" : "route-specific"
           }, scope: ${scope}). Waiting ${retryAfter}s before retrying... (attempt ${
             retries + 1
-          }/${MAX_RETRIES})`,
+          }/${MAX_RETRIES}) [Adaptive multiplier: ${rateLimitState.adaptiveDelayMultiplier.toFixed(2)}]`,
         );
 
-        // Add extra buffer for global rate limits
-        const waitTime = isGlobal ? retryAfter + 1 : retryAfter;
-        await new Promise((resolve) => setTimeout(resolve, waitTime * 1000));
+        // Wait with extra buffer
+        const waitTime = (retryAfter + (isGlobal ? 3 : 1)) * 1000;
+        await new Promise((resolve) => setTimeout(resolve, waitTime));
         retries++;
         continue;
       }
 
-      // Log rate limit headers for monitoring
-      const remaining = response.headers.get("X-RateLimit-Remaining");
-      const resetAfter = response.headers.get("X-RateLimit-Reset-After");
-      if (remaining && parseInt(remaining) < 5) {
-        console.warn(
-          `⚠️ Rate limit warning: Only ${remaining} requests remaining, resets in ${resetAfter}s`,
+      // Reset adaptive delay on successful requests
+      if (response.ok && timeSinceLastRateLimit > SYNC_CONFIG.RATE_LIMIT_COOLDOWN) {
+        rateLimitState.adaptiveDelayMultiplier = Math.max(
+          rateLimitState.adaptiveDelayMultiplier * 0.95, // Slowly reduce multiplier
+          1 // But never below 1
         );
       }
+
+      // Smart rate limiting based on remaining requests
+      const config = SYNC_CONFIG.ACTIVE;
+      const safetyThreshold = config.RATE_LIMIT_SAFETY_THRESHOLD || 3;
+      
+      if (remaining <= 1) {
+        // Critical: Wait for reset
+        console.warn(`🚨 Critical rate limit: ${remaining} remaining, waiting ${resetAfter}s for reset`);
+        await new Promise(resolve => setTimeout(resolve, (resetAfter + 1) * 1000));
+      } else if (remaining <= safetyThreshold) {
+        // Low: Add proportional delay
+        const delayMs = Math.max(200, (safetyThreshold - remaining) * 300);
+        console.warn(
+          `⚠️ Rate limit warning: ${remaining} requests remaining for ${routeKey}, adding ${delayMs}ms delay`,
+        );
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+      // No delay if remaining > safetyThreshold (this is the aggressive part!)
 
       return response;
     } catch (error) {
@@ -263,7 +370,7 @@ async function discordApiCall(
 
       // Add exponential backoff for network errors
       if (retries < MAX_RETRIES) {
-        const backoffDelay = Math.min(1000 * Math.pow(2, retries), 30000); // Max 30s
+        const backoffDelay = Math.min(1000 * Math.pow(2, retries), 45000); // Max 45s
         console.log(
           `Network error, waiting ${backoffDelay}ms before retry ${retries}/${MAX_RETRIES}`,
         );
@@ -1275,11 +1382,111 @@ serve(async (req) => {
     }
   }
 
+  // Handle batch sync trigger endpoint (new optimized version)
+  if (url.pathname === "/trigger-batch-sync" && req.method === "POST") {
+    try {
+      // Optional: Add authentication here
+      const authHeader = req.headers.get("Authorization");
+      const expectedAuth = Deno.env.get("SYNC_AUTH_TOKEN");
+
+      if (expectedAuth && authHeader !== `Bearer ${expectedAuth}`) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+
+      // Get guild ID from request body
+      let guildId: string | undefined;
+      try {
+        const body = await req.json();
+        guildId = body.guildId;
+      } catch {
+        // No body or invalid JSON, use default
+      }
+
+      const targetGuildId = guildId || Deno.env.get("DISCORD_GUILD_ID");
+      if (!targetGuildId) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: "guildId is required (either in request or DISCORD_GUILD_ID env var)",
+          }),
+          {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      }
+
+      // Trigger the batch sync asynchronously
+      (async () => {
+        try {
+          console.log("[HTTP] Starting batch sync");
+          
+          // Get all verified members
+          const verifiedMembers = await getVerifiedMembers(targetGuildId);
+          console.log(`[HTTP] Found ${verifiedMembers.length} verified members`);
+          
+          if (verifiedMembers.length === 0) {
+            console.log("[HTTP] No verified members found");
+            return;
+          }
+
+          // Use batch sync function
+          const result = await syncUserRolesBatch(targetGuildId, verifiedMembers, false);
+          
+          console.log(`[HTTP] Batch sync completed. Changes: ${result.changes.size}, Errors: ${result.errors.length}`);
+          
+          // Log summary
+          let totalChanges = 0;
+          for (const [userId, userChanges] of result.changes) {
+            totalChanges += userChanges.length;
+            console.log(`[HTTP] User ${userId}: ${userChanges.join(", ")}`);
+          }
+          
+          if (result.errors.length > 0) {
+            console.log(`[HTTP] Errors: ${result.errors.join("; ")}`);
+          }
+          
+          console.log(`[HTTP] === Batch sync complete: ${result.changes.size} users changed, ${totalChanges} total changes ===`);
+          
+        } catch (error) {
+          console.error("[HTTP] Error in batch sync:", error);
+        }
+      })().catch(error => {
+        console.error("[HTTP] Error in async batch sync:", error);
+      });
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          message: "Batch role synchronization triggered (optimized with batch APIs)",
+          guildId: targetGuildId,
+          note: "This uses the new batch APIs and should be much faster than individual sync"
+        }),
+        {
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    } catch (error) {
+      console.error("Error triggering batch sync:", error);
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: "Failed to trigger batch sync",
+        }),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }
+  }
+
   // Handle sync status endpoint
   if (url.pathname === "/sync-status" && req.method === "GET") {
     try {
       const status = getSyncStatus();
       const cacheStats = await getCacheStats();
+      const rateLimitStatus = getRateLimitStatus();
 
       return new Response(
         JSON.stringify({
@@ -1289,6 +1496,7 @@ serve(async (req) => {
             totalEntries: cacheStats.totalCached,
             cacheDurationDays: CACHE_DURATION_MS / (24 * 60 * 60 * 1000),
           },
+          rateLimits: rateLimitStatus,
         }),
         {
           headers: { "Content-Type": "application/json" },
@@ -1300,6 +1508,43 @@ serve(async (req) => {
         JSON.stringify({
           success: false,
           error: "Failed to get sync status",
+        }),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }
+  }
+
+  // Handle rate limit reset endpoint
+  if (url.pathname === "/reset-rate-limits" && req.method === "POST") {
+    try {
+      // Optional: Add authentication here
+      const authHeader = req.headers.get("Authorization");
+      const expectedAuth = Deno.env.get("SYNC_AUTH_TOKEN");
+
+      if (expectedAuth && authHeader !== `Bearer ${expectedAuth}`) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+
+      resetRateLimitState();
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          message: "Rate limit state reset successfully",
+        }),
+        {
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    } catch (error) {
+      console.error("Error resetting rate limits:", error);
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: "Failed to reset rate limits",
         }),
         {
           status: 500,
@@ -1627,13 +1872,43 @@ let bulkSyncStatus = {
 
 // Configuration for chunked processing
 const SYNC_CONFIG = {
-  BATCH_SIZE: 10, // Users per batch
-  CHUNK_SIZE: 50, // Users per chunk (for Deno limits)
-  MAX_EXECUTION_TIME: 12 * 60 * 1000, // 12 minutes max execution
-  DELAY_BETWEEN_USERS: 2000, // 2 seconds
-  DELAY_BETWEEN_BATCHES: 5000, // 5 seconds
-  DELAY_BETWEEN_ROLE_OPS: 500, // 500ms
-  INDIVIDUAL_USER_DELAY: 100, // Shorter delay for individual operations
+  // Conservative settings (current)
+  CONSERVATIVE: {
+    BATCH_SIZE: 5,
+    DELAY_BETWEEN_USERS: 5000,
+    DELAY_BETWEEN_BATCHES: 15000,
+    DELAY_BETWEEN_ROLE_OPS: 1500,
+  },
+  
+  // Smart aggressive settings (new)
+  AGGRESSIVE: {
+    BATCH_SIZE: 12,                    // Larger batches
+    DELAY_BETWEEN_USERS: 800,          // Much faster (0.8s)
+    DELAY_BETWEEN_BATCHES: 3000,       // Faster batches (3s)
+    DELAY_BETWEEN_ROLE_OPS: 300,       // Faster role ops (0.3s)
+    PARALLEL_OPERATIONS: 3,            // Process multiple users in parallel
+    RATE_LIMIT_SAFETY_THRESHOLD: 8,    // Slow down when < 8 requests remaining
+    ADAPTIVE_BACKOFF_MULTIPLIER: 2.0,  // More aggressive backoff
+  },
+  
+  // Current active config - start conservative, can switch to aggressive
+  get ACTIVE() {
+    const mode = Deno.env.get("SYNC_MODE") || "conservative";
+    return mode === "aggressive" ? this.AGGRESSIVE : this.CONSERVATIVE;
+  },
+  
+  // Legacy properties for backward compatibility
+  get BATCH_SIZE() { return this.ACTIVE.BATCH_SIZE; },
+  get CHUNK_SIZE() { return 25; }, // Keep existing chunk size
+  get MAX_EXECUTION_TIME() { return 12 * 60 * 1000; }, // 12 minutes max execution
+  get DELAY_BETWEEN_USERS() { return this.ACTIVE.DELAY_BETWEEN_USERS; },
+  get DELAY_BETWEEN_BATCHES() { return this.ACTIVE.DELAY_BETWEEN_BATCHES; },
+  get DELAY_BETWEEN_ROLE_OPS() { return this.ACTIVE.DELAY_BETWEEN_ROLE_OPS; },
+  get INDIVIDUAL_USER_DELAY() { return 500; }, // Increased from 100ms to 500ms
+  // New adaptive rate limiting settings
+  get ADAPTIVE_DELAY_MULTIPLIER() { return 1.5; }, // Multiply delays when rate limited
+  get MAX_ADAPTIVE_DELAY() { return 30000; }, // Max 30 seconds adaptive delay
+  get RATE_LIMIT_COOLDOWN() { return 60000; }, // 1 minute cooldown after hitting rate limits
 };
 
 // Function to stop the current bulk sync
@@ -2813,4 +3088,307 @@ if (ENABLE_AUTO_VALIDATOR_CHECK) {
   console.log("✅ Automated hourly validator verification is enabled");
 } else {
   console.log("ℹ️ Automated validator verification is disabled (set ENABLE_AUTO_VALIDATOR_CHECK=true to enable)");
+}
+
+// ===== BATCH API FUNCTIONS =====
+
+// Function to fetch multiple users' data in batch for role sync
+async function fetchEthosProfilesBatch(userIds: string[]): Promise<Map<string, any>> {
+  try {
+    console.log(`[BATCH] Fetching profiles for ${userIds.length} users`);
+    
+    // Convert Discord user IDs to userkeys
+    const userkeys = userIds.map(id => `service:discord:${id}`);
+    
+    // Batch fetch scores and stats (up to 500 users each)
+    const [scoresResponse, statsResponse] = await Promise.all([
+      fetch(`https://api.ethos.network/api/v2/score/userkeys`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userkeys })
+      }),
+      fetch(`https://api.ethos.network/api/v2/users/by/x`, {
+        method: "POST", 
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountIdsOrUsernames: userkeys })
+      })
+    ]);
+
+    const results = new Map<string, any>();
+
+    // Process scores response
+    if (scoresResponse.ok) {
+      const scoresData = await scoresResponse.json();
+      console.log(`[BATCH] Got scores for ${Object.keys(scoresData).length} users`);
+      
+      for (const [userkey, scoreData] of Object.entries(scoresData)) {
+        const userId = userkey.replace('service:discord:', '');
+        results.set(userId, { 
+          score: scoreData.score, 
+          level: scoreData.level,
+          hasProfile: true 
+        });
+      }
+    }
+
+    // Process stats response  
+    if (statsResponse.ok) {
+      const statsData = await statsResponse.json();
+      console.log(`[BATCH] Got stats for ${statsData.length} users`);
+      
+      for (const userStats of statsData) {
+        // Extract Discord ID from userkeys
+        const discordUserkey = userStats.userkeys?.find(uk => uk.startsWith('service:discord:'));
+        if (discordUserkey) {
+          const userId = discordUserkey.replace('service:discord:', '');
+          const existing = results.get(userId) || { hasProfile: false };
+          
+          results.set(userId, {
+            ...existing,
+            elements: {
+              totalReviews: userStats.stats?.review?.received || 0,
+              vouchCount: userStats.stats?.vouch?.count?.received || 0,
+              positivePercentage: userStats.stats?.review?.positiveReviewPercentage || 0,
+            },
+            primaryAddress: userStats.primaryAddress
+          });
+        }
+      }
+    }
+
+    // For users not found in API responses, mark as no profile
+    for (const userId of userIds) {
+      if (!results.has(userId)) {
+        results.set(userId, { hasProfile: false, error: "No profile found" });
+      }
+    }
+
+    console.log(`[BATCH] Processed ${results.size} total users`);
+    return results;
+    
+  } catch (error) {
+    console.error("[BATCH] Error fetching batch profiles:", error);
+    return new Map(); // Return empty map on error
+  }
+}
+
+// Function to check if a Discord user has an Ethos profile
+async function checkUserHasEthosProfile(userId: string): Promise<boolean> {
+  try {
+    console.log(
+      "Checking if Discord user with ID has an Ethos profile:",
+      userId,
+    );
+
+    // Make sure we're just using the raw ID without any @ symbol
+    const cleanUserId = userId.replace("@", "").replace("<", "").replace(
+      ">",
+      "",
+    );
+    console.log("Clean User ID:", cleanUserId);
+
+    // Use the Ethos API with the Discord ID - ensure proper format
+    const userkey = `service:discord:${cleanUserId}`;
+
+    // First fetch the user's addresses to see if they have an Ethos profile
+    const profileResponse = await fetch(
+      `https://api.ethos.network/api/v1/score/${userkey}`,
+    );
+
+    // If we get a 200 OK response, the user has a profile
+    return profileResponse.ok;
+  } catch (error) {
+    console.error("Error checking if user has Ethos profile:", error);
+    return false;
+  }
+}
+
+// Optimized batch sync function using batch APIs
+async function syncUserRolesBatch(
+  guildId: string,
+  userIds: string[],
+  forceSync = false,
+): Promise<{ success: boolean; changes: Map<string, string[]>; errors: string[] }> {
+  try {
+    console.log(`[BATCH-SYNC] Starting batch sync for ${userIds.length} users`);
+    
+    // Filter out recently synced users (unless forced)
+    let usersToSync = userIds;
+    if (!forceSync) {
+      const filteredUsers = [];
+      for (const userId of userIds) {
+        const recentlySynced = await wasRecentlySynced(userId);
+        if (!recentlySynced) {
+          filteredUsers.push(userId);
+        }
+      }
+      usersToSync = filteredUsers;
+      console.log(`[BATCH-SYNC] After cache filter: ${usersToSync.length} users need sync`);
+    }
+
+    if (usersToSync.length === 0) {
+      return { success: true, changes: new Map(), errors: [] };
+    }
+
+    // Batch fetch all user profiles (up to 500 at a time)
+    const batchSize = 500;
+    const allProfileData = new Map<string, any>();
+    
+    for (let i = 0; i < usersToSync.length; i += batchSize) {
+      const batch = usersToSync.slice(i, i + batchSize);
+      const batchProfiles = await fetchEthosProfilesBatch(batch);
+      
+      // Merge results
+      for (const [userId, profile] of batchProfiles) {
+        allProfileData.set(userId, profile);
+      }
+      
+      // Small delay between batch requests
+      if (i + batchSize < usersToSync.length) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+
+    // Batch fetch validator status for users with valid profiles
+    const usersWithProfiles = Array.from(allProfileData.entries())
+      .filter(([_, profile]) => profile.hasProfile && profile.score)
+      .map(([userId]) => userId);
+
+    const validatorStatuses = new Map<string, boolean>();
+    if (usersWithProfiles.length > 0) {
+      console.log(`[BATCH-SYNC] Checking validator status for ${usersWithProfiles.length} users with profiles`);
+      
+      // Check validators in smaller batches to avoid overwhelming the API
+      const validatorBatchSize = 50;
+      for (let i = 0; i < usersWithProfiles.length; i += validatorBatchSize) {
+        const batch = usersWithProfiles.slice(i, i + validatorBatchSize);
+        
+        // Check each user's validator status
+        const batchPromises = batch.map(async (userId) => {
+          const hasValidator = await checkUserOwnsValidator(userId);
+          return [userId, hasValidator] as [string, boolean];
+        });
+        
+        const batchResults = await Promise.all(batchPromises);
+        for (const [userId, hasValidator] of batchResults) {
+          validatorStatuses.set(userId, hasValidator);
+        }
+        
+        // Delay between validator batches
+        if (i + validatorBatchSize < usersWithProfiles.length) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      }
+    }
+
+    // Now process role changes for each user
+    const changes = new Map<string, string[]>();
+    const errors: string[] = [];
+    let processedCount = 0;
+
+    for (const userId of usersToSync) {
+      try {
+        processedCount++;
+        const profile = allProfileData.get(userId);
+        
+        if (processedCount % 50 === 0) {
+          console.log(`[BATCH-SYNC] Processed ${processedCount}/${usersToSync.length} users`);
+        }
+
+        // Get user's current Discord roles
+        const memberUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}`;
+        const memberResponse = await discordApiCall(memberUrl, { method: "GET" });
+
+        if (!memberResponse.ok) {
+          errors.push(`Failed to fetch member ${userId}: ${memberResponse.status}`);
+          continue;
+        }
+
+        const memberData = await memberResponse.json();
+        const currentRoles = memberData.roles || [];
+        const currentEthosRoles = getCurrentEthosRoles(currentRoles);
+
+        // Determine expected roles based on profile data
+        let expectedRoles = [ETHOS_VERIFIED_ROLE_ID]; // Always has basic verified role
+        
+        if (profile?.hasProfile && profile.score !== undefined) {
+          // Apply same validation as individual sync
+          const hasInteractions = (profile.elements?.totalReviews > 0) ||
+            (profile.elements?.vouchCount > 0) ||
+            profile.primaryAddress;
+          
+          const isDefaultProfile = profile.score === 1200 && !hasInteractions;
+          
+          if (hasInteractions && !isDefaultProfile) {
+            // Has valid profile
+            expectedRoles.push(ETHOS_VERIFIED_PROFILE_ROLE_ID);
+            
+            const hasValidator = validatorStatuses.get(userId) || false;
+            const scoreRoles = getExpectedRoles(profile.score, hasValidator, true);
+            expectedRoles = scoreRoles; // This includes verified + verified profile + score role
+          }
+        }
+
+        // Calculate role changes
+        const rolesToAdd = expectedRoles.filter(roleId => !currentRoles.includes(roleId));
+        const rolesToRemove = currentEthosRoles.filter(roleId => !expectedRoles.includes(roleId));
+
+        if (rolesToAdd.length === 0 && rolesToRemove.length === 0) {
+          // Mark as synced since roles are correct
+          await markUserSynced(userId);
+          continue;
+        }
+
+        // Apply role changes
+        const userChanges: string[] = [];
+
+        // Remove incorrect roles
+        for (const roleId of rolesToRemove) {
+          const removeUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${roleId}`;
+          const removeResponse = await discordApiCall(removeUrl, { method: "DELETE" });
+
+          if (removeResponse.ok) {
+            const roleName = getRoleNameFromId(roleId);
+            userChanges.push(`Removed ${roleName} role`);
+          }
+
+          await new Promise(resolve => setTimeout(resolve, SYNC_CONFIG.DELAY_BETWEEN_ROLE_OPS));
+        }
+
+        // Add correct roles
+        for (const roleId of rolesToAdd) {
+          const addUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${roleId}`;
+          const addResponse = await discordApiCall(addUrl, { method: "PUT" });
+
+          if (addResponse.ok) {
+            const roleName = getRoleNameFromId(roleId);
+            userChanges.push(`Added ${roleName} role`);
+          }
+
+          await new Promise(resolve => setTimeout(resolve, SYNC_CONFIG.DELAY_BETWEEN_ROLE_OPS));
+        }
+
+        if (userChanges.length > 0) {
+          changes.set(userId, userChanges);
+        }
+
+        // Mark as synced
+        await markUserSynced(userId);
+
+        // Delay between users
+        await new Promise(resolve => setTimeout(resolve, SYNC_CONFIG.DELAY_BETWEEN_USERS));
+
+      } catch (error) {
+        console.error(`[BATCH-SYNC] Error processing user ${userId}:`, error);
+        errors.push(`Error processing user ${userId}: ${error.message}`);
+      }
+    }
+
+    console.log(`[BATCH-SYNC] Completed batch sync. Changes: ${changes.size}, Errors: ${errors.length}`);
+    return { success: true, changes, errors };
+
+  } catch (error) {
+    console.error("[BATCH-SYNC] Error in batch sync:", error);
+    return { success: false, changes: new Map(), errors: [error.message] };
+  }
 }

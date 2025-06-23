@@ -1,0 +1,40 @@
+version: 2
+
+# Main Discord bot service
+services:
+  discord-bot:
+    source: .
+    dockerfile: railway.dockerfile
+    environment:
+      PORT: 8000
+    domains:
+      - your-discord-bot.railway.app
+    healthcheck:
+      httpPath: /health
+      httpTimeout: 10
+      
+  # Separate cron service for scheduled tasks
+  cron-manager:
+    source: .
+    dockerfile: railway-cron.dockerfile
+    environment:
+      PORT: 8001
+      SYNC_SERVICE_URL: https://your-discord-bot.railway.app
+    healthcheck:
+      httpPath: /health
+      httpTimeout: 10
+
+# Shared environment variables
+environment:
+  DISCORD_TOKEN: ${DISCORD_TOKEN}
+  DISCORD_APPLICATION_ID: ${DISCORD_APPLICATION_ID}
+  DISCORD_PUBLIC_KEY: ${DISCORD_PUBLIC_KEY}
+  DISCORD_GUILD_ID: ${DISCORD_GUILD_ID}
+  SYNC_AUTH_TOKEN: ${SYNC_AUTH_TOKEN}
+  
+  # Optional role environment variables
+  ETHOS_ROLE_EXEMPLARY: ${ETHOS_ROLE_EXEMPLARY}
+  ETHOS_ROLE_REPUTABLE: ${ETHOS_ROLE_REPUTABLE}
+  ETHOS_ROLE_NEUTRAL: ${ETHOS_ROLE_NEUTRAL}
+  ETHOS_ROLE_QUESTIONABLE: ${ETHOS_ROLE_QUESTIONABLE}
+  ETHOS_ROLE_UNTRUSTED: ${ETHOS_ROLE_UNTRUSTED} 
