@@ -3092,7 +3092,7 @@ if (ENABLE_AUTO_VALIDATOR_CHECK) {
 
 // ===== BATCH API FUNCTIONS =====
 
-// Function to fetch multiple users' data in batch for role sync
+// Hybrid batch API function with fallback to individual APIs
 async function fetchEthosProfilesBatch(userIds: string[]): Promise<Map<string, any>> {
   try {
     console.log(`[BATCH] Fetching profiles for ${userIds.length} users`);
@@ -3115,6 +3115,7 @@ async function fetchEthosProfilesBatch(userIds: string[]): Promise<Map<string, a
     ]);
 
     const results = new Map<string, any>();
+    const usersNeedingFallback = new Set<string>();
 
     // Process scores response with better error handling
     if (scoresResponse.ok) {
@@ -3157,10 +3158,17 @@ async function fetchEthosProfilesBatch(userIds: string[]): Promise<Map<string, a
         }
       } catch (error) {
         console.error(`[BATCH] Error parsing scores response:`, error);
-        console.log(`[BATCH] Scores response text:`, await scoresResponse.text());
+        // Add all users to fallback list if batch scores fail
+        for (const userId of userIds) {
+          usersNeedingFallback.add(userId);
+        }
       }
     } else {
       console.error(`[BATCH] Scores API failed: ${scoresResponse.status} ${scoresResponse.statusText}`);
+      // Add all users to fallback list if batch scores fail
+      for (const userId of userIds) {
+        usersNeedingFallback.add(userId);
+      }
     }
 
     // Process stats response with better error handling
@@ -3173,6 +3181,9 @@ async function fetchEthosProfilesBatch(userIds: string[]): Promise<Map<string, a
         const statsEntries = statsData.data || statsData;
         const statsArray = Array.isArray(statsEntries) ? statsEntries : [statsEntries];
         console.log(`[BATCH] Got stats for ${statsArray.length} users`);
+        
+        // Track which users got stats data
+        const usersWithStats = new Set<string>();
         
         for (const userStats of statsArray) {
           if (!userStats) continue;
@@ -3197,18 +3208,96 @@ async function fetchEthosProfilesBatch(userIds: string[]): Promise<Map<string, a
               primaryAddress: userStats.primaryAddress
             });
             
+            usersWithStats.add(userId);
             console.log(`[BATCH] User ${userId}: reviews=${totalReviews}, vouches=${vouchCount}, address=${userStats.primaryAddress ? 'yes' : 'no'}`);
           }
         }
+        
+        // Mark users without stats data for fallback
+        for (const userId of userIds) {
+          if (results.has(userId) && !usersWithStats.has(userId)) {
+            console.log(`[BATCH] User ${userId} missing stats data, marking for fallback`);
+            usersNeedingFallback.add(userId);
+          }
+        }
+        
       } catch (error) {
         console.error(`[BATCH] Error parsing stats response:`, error);
-        console.log(`[BATCH] Stats response text:`, await statsResponse.text());
+        // Mark all users with profiles for fallback if stats parsing fails
+        for (const userId of userIds) {
+          if (results.has(userId)) {
+            usersNeedingFallback.add(userId);
+          }
+        }
       }
     } else {
       console.error(`[BATCH] Stats API failed: ${statsResponse.status} ${statsResponse.statusText}`);
+      // Mark all users with profiles for fallback if stats API fails
+      for (const userId of userIds) {
+        if (results.has(userId)) {
+          usersNeedingFallback.add(userId);
+        }
+      }
     }
 
-    // For users not found in API responses, mark as no profile
+    // Fallback to individual APIs for users with incomplete data
+    if (usersNeedingFallback.size > 0) {
+      console.log(`[BATCH] Using individual API fallback for ${usersNeedingFallback.size} users`);
+      
+      for (const userId of usersNeedingFallback) {
+        try {
+          const userkey = `service:discord:${userId}`;
+          
+          // Fetch individual profile data
+          const [individualScoreResponse, individualStatsResponse] = await Promise.all([
+            fetch(`https://api.ethos.network/api/v1/score/${userkey}`),
+            fetch(`https://api.ethos.network/api/v1/users/${userkey}/stats`)
+          ]);
+          
+          let profileData: any = { hasProfile: false };
+          
+          // Process individual score
+          if (individualScoreResponse.ok) {
+            const scoreData = await individualScoreResponse.json();
+            if (scoreData.ok && scoreData.data) {
+              profileData = {
+                score: scoreData.data.score,
+                level: scoreData.data.level,
+                hasProfile: true,
+                elements: {} // Initialize elements
+              };
+            }
+          }
+          
+          // Process individual stats
+          if (individualStatsResponse.ok && profileData.hasProfile) {
+            const statsData = await individualStatsResponse.json();
+            if (statsData.ok && statsData.data) {
+              profileData.elements = {
+                totalReviews: statsData.data.reviews?.received || 0,
+                vouchCount: statsData.data.vouches?.count?.received || 0,
+                positivePercentage: statsData.data.reviews?.positiveReviewPercentage || 0,
+              };
+              
+              // Set primaryAddress based on vouches (if they have vouches, they likely have an address)
+              profileData.primaryAddress = (statsData.data.vouches?.count?.received > 0) ? "unknown" : undefined;
+            }
+          }
+          
+          results.set(userId, profileData);
+          console.log(`[BATCH] Fallback for user ${userId}: score=${profileData.score}, reviews=${profileData.elements?.totalReviews}, vouches=${profileData.elements?.vouchCount}`);
+          
+          // Small delay between individual API calls
+          await new Promise(resolve => setTimeout(resolve, 100));
+          
+        } catch (error) {
+          console.error(`[BATCH] Fallback failed for user ${userId}:`, error);
+          results.set(userId, { hasProfile: false, error: "Fallback failed" });
+        }
+      }
+    }
+
+    // For users not found in any API responses, mark as no profile
     for (const userId of userIds) {
       if (!results.has(userId)) {
         results.set(userId, { hasProfile: false, error: "No profile found" });
@@ -3216,7 +3305,7 @@ async function fetchEthosProfilesBatch(userIds: string[]): Promise<Map<string, a
       }
     }
 
-    console.log(`[BATCH] Final results: ${results.size} total users processed`);
+    console.log(`[BATCH] Final results: ${results.size} total users processed, ${usersNeedingFallback.size} used fallback`);
     return results;
     
   } catch (error) {
