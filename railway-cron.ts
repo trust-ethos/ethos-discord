@@ -71,7 +71,7 @@ async function makeRequest(endpoint: string, options: RequestInit = {}) {
 // Cron job handlers
 const cronHandlers = {
   async roleSync() {
-    console.log("🔄 Starting scheduled role synchronization...");
+    console.log("🔄 Starting scheduled batch role synchronization...");
     
     try {
       // Check if a sync is already running
@@ -89,47 +89,22 @@ const cronHandlers = {
         return;
       }
 
-      // Start chunked sync with conservative settings
-      let startIndex = 0;
-      let completed = false;
-      let chunkCount = 0;
+      // Use optimized batch sync (much faster with batch APIs)
+      console.log("🚀 Starting optimized batch sync with Ethos batch APIs");
 
-      while (!completed && !isShuttingDown) {
-        chunkCount++;
-        console.log(`📦 Processing chunk ${chunkCount} (from index ${startIndex})`);
+      const result = await makeRequest("/trigger-batch-sync", {
+        method: "POST",
+        body: JSON.stringify({
+          guildId: DISCORD_GUILD_ID,
+        }),
+      });
 
-        const result = await makeRequest("/trigger-sync", {
-          method: "POST",
-          body: JSON.stringify({
-            guildId: DISCORD_GUILD_ID,
-            startIndex,
-            chunkSize: 20, // Conservative chunk size
-          }),
-        });
+      console.log("✅ Batch sync triggered successfully:", result.message);
+      console.log("📊 This should complete much faster (30-60 min vs 3-5 hours previously)");
 
-        console.log(`✅ Chunk ${chunkCount}: ${result.nextIndex - startIndex} users processed`);
-        console.log(`📊 Progress: ${result.nextIndex}/${result.totalUsers} (${((result.nextIndex / result.totalUsers) * 100).toFixed(1)}%)`);
-
-        completed = result.completed;
-        startIndex = result.nextIndex;
-
-        if (!completed) {
-          // Wait between chunks and check if we should continue
-          console.log("⏸️ Waiting 45s between chunks...");
-          await new Promise(resolve => setTimeout(resolve, 45000));
-
-          // Check rate limits before continuing
-          const updatedStatus = await makeRequest("/sync-status");
-          if (updatedStatus.rateLimits.adaptiveDelayMultiplier > 3) {
-            console.log("⚠️ Rate limits too high, stopping sync early");
-            break;
-          }
-        }
-      }
-
-      console.log("✅ Scheduled role sync completed successfully");
+      console.log("✅ Scheduled batch role sync completed successfully");
     } catch (error) {
-      console.error("❌ Error in scheduled role sync:", error);
+      console.error("❌ Error in scheduled batch role sync:", error);
     }
   },
 

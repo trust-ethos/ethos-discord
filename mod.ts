@@ -474,6 +474,34 @@ async function sendFollowUpEmbedMessage(
   }
 }
 
+// Function to send public follow-up embed message after deferred response
+async function sendPublicFollowUpEmbedMessage(
+  interactionId: string,
+  interactionToken: string,
+  embed: any,
+): Promise<void> {
+  try {
+    const url = `https://discord.com/api/v10/webhooks/${APPLICATION_ID}/${interactionToken}`;
+
+    const response = await discordApiCall(url, {
+      method: "POST",
+      body: JSON.stringify({
+        embeds: [embed],
+        // No flags = public message
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      console.error(`Failed to send public follow-up embed: ${response.status} ${errorData}`);
+      throw new Error(`Failed to send public follow-up embed: ${response.status}`);
+    }
+  } catch (error) {
+    console.error("Error sending public follow-up embed message:", error);
+    throw error;
+  }
+}
+
 // Helper function to safely send follow-up messages with token check
 async function safeFollowUp(
   interaction: { id: string; token?: string },
@@ -1041,7 +1069,7 @@ async function handleInteraction(
         const deferredResponse = {
           type: InteractionResponseType.DeferredChannelMessageWithSource,
           data: {
-            flags: 64, // Ephemeral
+            // No flags = public message
           },
         };
 
@@ -1087,8 +1115,8 @@ async function handleInteraction(
                 `https://app.ethos.network/profile/discord/${profile.userId}?src=discord-agent`;
             }
 
-            // Send follow-up with embed
-            await sendFollowUpEmbedMessage(interaction.id, interaction.token, {
+            // Send follow-up with embed (public)
+            await sendPublicFollowUpEmbedMessage(interaction.id, interaction.token, {
               title,
               url: profileUrl,
               description: `${displayName} is considered **${
@@ -1164,7 +1192,7 @@ async function handleInteraction(
         const deferredResponse = {
           type: InteractionResponseType.DeferredChannelMessageWithSource,
           data: {
-            flags: 64, // Ephemeral
+            // No flags = public message
           },
         };
 
@@ -1182,8 +1210,8 @@ async function handleInteraction(
             const profileUrl =
               `https://app.ethos.network/profile/x/${profile.handle}?src=discord-agent`;
 
-            // Send follow-up with embed
-            await sendFollowUpEmbedMessage(interaction.id, interaction.token, {
+            // Send follow-up with embed (public)
+            await sendPublicFollowUpEmbedMessage(interaction.id, interaction.token, {
               title,
               url: profileUrl,
               description: `${profile.name} is considered **${
@@ -3056,24 +3084,26 @@ export async function triggerValidatorVerification(guildId?: string): Promise<vo
   await performValidatorVerification(targetGuildId);
 }
 
-// ===== AUTOMATED CRON-BASED VALIDATOR VERIFICATION =====
+// ===== AUTOMATED CRON-BASED OPERATIONS =====
 
-// Set up automated hourly validator verification using Deno.cron
+// Set up automated validator verification and batch sync using Deno.cron
 // This only runs in production deployments on Deno Deploy
 const ENABLE_AUTO_VALIDATOR_CHECK = Deno.env.get("ENABLE_AUTO_VALIDATOR_CHECK") === "true";
+const ENABLE_AUTO_BATCH_SYNC = Deno.env.get("ENABLE_AUTO_BATCH_SYNC") === "true";
 
+// Validator verification cron (every 2 hours)
 if (ENABLE_AUTO_VALIDATOR_CHECK) {
-  console.log("🕐 Setting up automated hourly validator verification with Deno.cron");
+  console.log("🕐 Setting up automated validator verification with Deno.cron (every 2 hours)");
   
-  Deno.cron("Hourly Validator Verification", "0 * * * *", {
+  Deno.cron("Validator Verification", "0 */2 * * *", {
     backoffSchedule: [1000, 5000, 10000], // Retry after 1s, 5s, 10s if failed
   }, async () => {
-    console.log("🔍 [CRON] Starting automated hourly validator verification");
+    console.log("🔍 [CRON] Starting automated validator verification");
     
     try {
       const guildId = Deno.env.get("DISCORD_GUILD_ID");
       if (!guildId) {
-        console.error("[CRON] DISCORD_GUILD_ID environment variable not set for cron job");
+        console.error("[CRON] DISCORD_GUILD_ID environment variable not set for validator cron job");
         return;
       }
       
@@ -3085,9 +3115,65 @@ if (ENABLE_AUTO_VALIDATOR_CHECK) {
     }
   });
   
-  console.log("✅ Automated hourly validator verification is enabled");
+  console.log("✅ Automated validator verification is enabled (every 2 hours)");
 } else {
   console.log("ℹ️ Automated validator verification is disabled (set ENABLE_AUTO_VALIDATOR_CHECK=true to enable)");
+}
+
+// Batch sync cron (every 6 hours)
+if (ENABLE_AUTO_BATCH_SYNC) {
+  console.log("🕐 Setting up automated batch sync with Deno.cron (every 6 hours)");
+  
+  Deno.cron("Batch Role Sync", "0 */6 * * *", {
+    backoffSchedule: [5000, 15000, 30000], // Longer backoff for batch operations
+  }, async () => {
+    console.log("🔄 [CRON] Starting automated batch role sync");
+    
+    try {
+      const guildId = Deno.env.get("DISCORD_GUILD_ID");
+      if (!guildId) {
+        console.error("[CRON] DISCORD_GUILD_ID environment variable not set for batch sync cron job");
+        return;
+      }
+      
+      // Get all verified members
+      const verifiedMembers = await getVerifiedMembers(guildId);
+      console.log(`[CRON] Found ${verifiedMembers.length} verified members for batch sync`);
+      
+      if (verifiedMembers.length === 0) {
+        console.log("[CRON] No verified members found for batch sync");
+        return;
+      }
+
+      // Use batch sync function (optimized with batch APIs)
+      const result = await syncUserRolesBatch(guildId, verifiedMembers, false);
+      
+      console.log(`[CRON] Batch sync completed. Changes: ${result.changes.size}, Errors: ${result.errors.length}`);
+      
+      // Log summary
+      let totalChanges = 0;
+      for (const [userId, userChanges] of result.changes) {
+        totalChanges += userChanges.length;
+        if (userChanges.length > 0) {
+          console.log(`[CRON] User ${userId}: ${userChanges.join(", ")}`);
+        }
+      }
+      
+      if (result.errors.length > 0) {
+        console.log(`[CRON] Errors: ${result.errors.slice(0, 5).join("; ")}${result.errors.length > 5 ? ` (and ${result.errors.length - 5} more)` : ""}`);
+      }
+      
+      console.log(`✅ [CRON] Automated batch sync complete: ${result.changes.size} users changed, ${totalChanges} total changes`);
+      
+    } catch (error) {
+      console.error("❌ [CRON] Error in automated batch sync:", error);
+      throw error; // This will trigger the retry mechanism
+    }
+  });
+  
+  console.log("✅ Automated batch sync is enabled (every 6 hours)");
+} else {
+  console.log("ℹ️ Automated batch sync is disabled (set ENABLE_AUTO_BATCH_SYNC=true to enable)");
 }
 
 // ===== BATCH API FUNCTIONS =====
