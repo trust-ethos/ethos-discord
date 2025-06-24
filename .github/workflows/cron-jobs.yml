@@ -1,0 +1,128 @@
+name: Discord Bot Cron Jobs
+
+on:
+  schedule:
+    # Validator verification every 2 hours
+    - cron: '0 */2 * * *'
+    # Batch sync every 6 hours  
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      job_type:
+        description: 'Type of job to run'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+        - validator-check
+        - batch-sync
+        - both
+
+jobs:
+  determine-jobs:
+    runs-on: ubuntu-latest
+    outputs:
+      run-validator: ${{ steps.determine.outputs.run-validator }}
+      run-batch-sync: ${{ steps.determine.outputs.run-batch-sync }}
+    steps:
+      - name: Determine which jobs to run
+        id: determine
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            case "${{ github.event.inputs.job_type }}" in
+              "validator-check")
+                echo "run-validator=true" >> $GITHUB_OUTPUT
+                echo "run-batch-sync=false" >> $GITHUB_OUTPUT
+                ;;
+              "batch-sync")
+                echo "run-validator=false" >> $GITHUB_OUTPUT
+                echo "run-batch-sync=true" >> $GITHUB_OUTPUT
+                ;;
+              "both")
+                echo "run-validator=true" >> $GITHUB_OUTPUT
+                echo "run-batch-sync=true" >> $GITHUB_OUTPUT
+                ;;
+            esac
+          else
+            # For scheduled runs, determine based on time
+            current_hour=$(date -u +%H)
+            current_minute=$(date -u +%M)
+            
+            # Validator check runs every 2 hours (0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22)
+            if (( current_minute == 0 && current_hour % 2 == 0 )); then
+              echo "run-validator=true" >> $GITHUB_OUTPUT
+            else
+              echo "run-validator=false" >> $GITHUB_OUTPUT
+            fi
+            
+            # Batch sync runs every 6 hours (0, 6, 12, 18)
+            if (( current_minute == 0 && current_hour % 6 == 0 )); then
+              echo "run-batch-sync=true" >> $GITHUB_OUTPUT
+            else
+              echo "run-batch-sync=false" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+  validator-check:
+    needs: determine-jobs
+    if: needs.determine-jobs.outputs.run-validator == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Validator Verification
+        run: |
+          echo "🔍 Running validator verification..."
+          response=$(curl -s -X POST "https://delicious-babies-production.up.railway.app/trigger-validator-check" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          
+          echo "Response: $response"
+          
+          # Check if the response indicates success
+          if echo "$response" | grep -q '"success":true'; then
+            echo "✅ Validator verification triggered successfully"
+          else
+            echo "❌ Validator verification failed"
+            echo "$response"
+            exit 1
+          fi
+
+  batch-sync:
+    needs: determine-jobs
+    if: needs.determine-jobs.outputs.run-batch-sync == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Batch Sync
+        run: |
+          echo "🔄 Running batch role sync..."
+          response=$(curl -s -X POST "https://delicious-babies-production.up.railway.app/trigger-batch-sync" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          
+          echo "Response: $response"
+          
+          # Check if the response indicates success
+          if echo "$response" | grep -q '"success":true'; then
+            echo "✅ Batch sync triggered successfully"
+          else
+            echo "❌ Batch sync failed"
+            echo "$response"
+            exit 1
+          fi
+
+  notify-completion:
+    needs: [determine-jobs, validator-check, batch-sync]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log completion status
+        run: |
+          echo "🏁 Cron jobs completed"
+          echo "Validator check: ${{ needs.validator-check.result || 'skipped' }}"
+          echo "Batch sync: ${{ needs.batch-sync.result || 'skipped' }}"
+          
+          if [[ "${{ needs.validator-check.result }}" == "failure" || "${{ needs.batch-sync.result }}" == "failure" ]]; then
+            echo "❌ One or more jobs failed"
+            exit 1
+          else
+            echo "✅ All jobs completed successfully"
+          fi 
