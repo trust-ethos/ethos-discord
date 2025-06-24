@@ -31,47 +31,72 @@ const SCHEDULES = {
 interface CronJob {
   name: string;
   schedule: string;
-  handler: () => Promise<void>;
-  lastRun?: number;
-  nextRun?: number;
-  isRunning: boolean;
+  endpoint: string;
+  description: string;
 }
 
-let cronJobs: CronJob[] = [];
-let isShuttingDown = false;
-
-// Utility function for authenticated requests
-async function makeRequest(endpoint: string, options: RequestInit = {}) {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...(options.headers as Record<string, string> || {}),
-  };
-
-  if (AUTH_TOKEN) {
-    headers["Authorization"] = `Bearer ${AUTH_TOKEN}`;
+const CRON_JOBS: CronJob[] = [
+  {
+    name: "Validator Verification",
+    schedule: "0 */2 * * *", // Every 2 hours
+    endpoint: "/trigger-validator-check",
+    description: "Check users with validator roles to ensure they still own validator NFTs"
+  },
+  {
+    name: "Batch Role Sync", 
+    schedule: "0 */6 * * *", // Every 6 hours
+    endpoint: "/trigger-batch-sync",
+    description: "Sync roles for all verified users using optimized batch APIs"
   }
+];
 
+// Get the main bot service URL
+const BOT_SERVICE_URL = Deno.env.get("BOT_SERVICE_URL") || "https://delicious-babies-production.up.railway.app";
+
+// Helper function to make HTTP requests to the bot service
+async function makeRequest(endpoint: string, data: any = {}): Promise<any> {
   try {
-    const response = await fetch(`${SYNC_SERVICE_URL}${endpoint}`, {
-      ...options,
-      headers,
+    const url = `${BOT_SERVICE_URL}${endpoint}`;
+    console.log(`🌐 Making request to: ${url}`);
+    
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(data),
     });
 
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
 
-    return await response.json();
+    const result = await response.json();
+    console.log(`✅ Request successful:`, result);
+    return result;
   } catch (error) {
-    console.error(`❌ Request failed for ${endpoint}:`, error);
+    console.error(`❌ Request failed:`, error);
     throw error;
   }
 }
 
-// Cron job handlers
-const cronHandlers = {
-  async roleSync() {
-    console.log("🔄 Starting scheduled batch role synchronization...");
+// Cron job execution functions
+const cronFunctions = {
+  async validatorCheck() {
+    console.log("🔍 Starting scheduled validator verification...");
+    
+    try {
+      const result = await makeRequest("/trigger-validator-check");
+      console.log("✅ Validator verification triggered successfully");
+      return result;
+    } catch (error) {
+      console.error("❌ Validator verification failed:", error);
+      throw error;
+    }
+  },
+
+  async batchSync() {
+    console.log("🔄 Starting scheduled batch role sync...");
     
     try {
       // Check if a sync is already running
@@ -81,291 +106,83 @@ const cronHandlers = {
         return;
       }
 
-      // Check rate limit status before starting
-      const rateLimits = status.rateLimits;
-      if (rateLimits.isGloballyRateLimited || rateLimits.adaptiveDelayMultiplier > 2) {
-        console.log("⚠️ Rate limits too high, delaying sync by 30 minutes");
-        // Could reschedule or just skip this run
-        return;
-      }
-
-      // Use optimized batch sync (much faster with batch APIs)
-      console.log("🚀 Starting optimized batch sync with Ethos batch APIs");
-
-      const result = await makeRequest("/trigger-batch-sync", {
-        method: "POST",
-        body: JSON.stringify({
-          guildId: DISCORD_GUILD_ID,
-        }),
-      });
-
-      console.log("✅ Batch sync triggered successfully:", result.message);
-      console.log("📊 This should complete much faster (30-60 min vs 3-5 hours previously)");
-
-      console.log("✅ Scheduled batch role sync completed successfully");
+      // Start batch sync
+      const result = await makeRequest("/trigger-batch-sync");
+      console.log("✅ Batch sync triggered successfully");
+      return result;
     } catch (error) {
-      console.error("❌ Error in scheduled batch role sync:", error);
-    }
-  },
-
-  async validatorCheck() {
-    console.log("🔍 Starting scheduled validator verification...");
-    
-    try {
-      // Check if validator check is already running
-      const status = await makeRequest("/validator-check-status");
-      if (status.status.isRunning) {
-        console.log("⏭️ Validator check already running, skipping");
-        return;
-      }
-
-      await makeRequest("/trigger-validator-check", {
-        method: "POST",
-        body: JSON.stringify({
-          guildId: DISCORD_GUILD_ID,
-        }),
-      });
-
-      console.log("✅ Validator verification triggered successfully");
-    } catch (error) {
-      console.error("❌ Error in scheduled validator check:", error);
-    }
-  },
-
-  async cacheCleanup() {
-    console.log("🧹 Starting cache cleanup...");
-    
-    try {
-      const stats = await makeRequest("/cache-stats");
-      console.log(`📊 Cache stats: ${stats.cache.totalEntries} entries`);
-      
-      // Log cache age information
-      if (stats.cache.oldestEntryDate) {
-        console.log(`📅 Oldest entry: ${stats.cache.oldestEntryDate}`);
-        console.log(`📅 Newest entry: ${stats.cache.newestEntryDate}`);
-      }
-      
-      console.log("✅ Cache cleanup check completed");
-    } catch (error) {
-      console.error("❌ Error in cache cleanup:", error);
-    }
-  },
-
-  async healthCheck() {
-    try {
-      const health = await makeRequest("/health");
-      // Only log health check results if there are issues
-      if (!health || health.status !== "healthy") {
-        console.log("⚠️ Health check failed:", health);
-      }
-    } catch (error) {
-      console.error("❌ Health check failed:", error);
+      console.error("❌ Batch sync failed:", error);
+      throw error;
     }
   }
 };
 
-// Simple cron parser (basic implementation)
-function parseCronExpression(expression: string): { 
-  minutes: number[], 
-  hours: number[], 
-  days: number[], 
-  months: number[], 
-  weekdays: number[] 
-} {
-  const parts = expression.split(' ');
-  if (parts.length !== 5) {
-    throw new Error('Invalid cron expression');
+// Main cron execution based on schedule
+async function executeCronJob(jobName: string) {
+  console.log(`🕐 [${new Date().toISOString()}] Executing cron job: ${jobName}`);
+  
+  try {
+    switch (jobName) {
+      case "validator-check":
+        await cronFunctions.validatorCheck();
+        break;
+      case "batch-sync":
+        await cronFunctions.batchSync();
+        break;
+      default:
+        throw new Error(`Unknown cron job: ${jobName}`);
+    }
+    
+    console.log(`✅ [${new Date().toISOString()}] Cron job completed: ${jobName}`);
+  } catch (error) {
+    console.error(`❌ [${new Date().toISOString()}] Cron job failed: ${jobName}`, error);
+    Deno.exit(1); // Exit with error code for Railway to detect failure
   }
-
-  const parseField = (field: string, max: number): number[] => {
-    if (field === '*') return Array.from({ length: max }, (_, i) => i);
-    if (field.includes('/')) {
-      const [range, step] = field.split('/');
-      const stepNum = parseInt(step);
-      if (range === '*') {
-        return Array.from({ length: max }, (_, i) => i).filter(i => i % stepNum === 0);
-      }
-    }
-    if (field.includes(',')) {
-      return field.split(',').map(n => parseInt(n));
-    }
-    return [parseInt(field)];
-  };
-
-  return {
-    minutes: parseField(parts[0], 60),
-    hours: parseField(parts[1], 24),
-    days: parseField(parts[2], 32), // 1-31
-    months: parseField(parts[3], 13), // 1-12
-    weekdays: parseField(parts[4], 7), // 0-6
-  };
 }
 
-function shouldRunNow(schedule: string, lastRun?: number): boolean {
-  const now = new Date();
-  const cron = parseCronExpression(schedule);
-  
-  // Check if current time matches cron schedule
-  const matches = cron.minutes.includes(now.getMinutes()) &&
-                 cron.hours.includes(now.getHours()) &&
-                 (cron.days.includes(now.getDate()) || cron.days.length === 31) &&
-                 (cron.months.includes(now.getMonth() + 1) || cron.months.length === 12) &&
-                 (cron.weekdays.includes(now.getDay()) || cron.weekdays.length === 7);
-
-  // Don't run if we ran in the last 50 seconds (avoid duplicate runs)
-  const timeSinceLastRun = lastRun ? now.getTime() - lastRun : Infinity;
-  
-  return matches && timeSinceLastRun > 50000;
+// Health check endpoint
+async function handleHealthCheck(): Promise<Response> {
+  return new Response(
+    JSON.stringify({
+      status: "healthy",
+      service: "railway-cron",
+      timestamp: new Date().toISOString(),
+      botServiceUrl: BOT_SERVICE_URL,
+      availableJobs: CRON_JOBS.map(job => ({
+        name: job.name,
+        schedule: job.schedule,
+        description: job.description
+      }))
+    }),
+    {
+      headers: { "Content-Type": "application/json" },
+    }
+  );
 }
 
-// Initialize cron jobs
-function initializeCronJobs() {
-  cronJobs = [
-    {
-      name: "Role Sync",
-      schedule: SCHEDULES.ROLE_SYNC,
-      handler: cronHandlers.roleSync,
-      isRunning: false,
-    },
-    {
-      name: "Validator Check", 
-      schedule: SCHEDULES.VALIDATOR_CHECK,
-      handler: cronHandlers.validatorCheck,
-      isRunning: false,
-    },
-    {
-      name: "Cache Cleanup",
-      schedule: SCHEDULES.CACHE_CLEANUP, 
-      handler: cronHandlers.cacheCleanup,
-      isRunning: false,
-    },
-    {
-      name: "Health Check",
-      schedule: SCHEDULES.HEALTH_CHECK,
-      handler: cronHandlers.healthCheck,
-      isRunning: false,
-    },
-  ];
-
-  console.log("📅 Cron jobs initialized:");
-  cronJobs.forEach(job => {
-    console.log(`  - ${job.name}: ${job.schedule}`);
+// Check if this is being run as a cron job
+const args = Deno.args;
+if (args.length > 0) {
+  const jobName = args[0];
+  console.log(`🚀 Railway Cron Service - Running job: ${jobName}`);
+  await executeCronJob(jobName);
+} else {
+  // Run as HTTP service for health checks
+  console.log("🌐 Railway Cron Service - Starting HTTP server for health checks");
+  console.log("Available cron jobs:");
+  CRON_JOBS.forEach(job => {
+    console.log(`  - ${job.name}: ${job.schedule} (${job.description})`);
   });
-}
-
-// Main cron loop
-async function runCronLoop() {
-  console.log("🕐 Starting cron loop...");
   
-  while (!isShuttingDown) {
-    const now = Date.now();
-    
-    for (const job of cronJobs) {
-      if (!job.isRunning && shouldRunNow(job.schedule, job.lastRun)) {
-        console.log(`▶️ Running scheduled job: ${job.name}`);
-        
-        job.isRunning = true;
-        job.lastRun = now;
-        
-        try {
-          await job.handler();
-        } catch (error) {
-          console.error(`❌ Error in cron job ${job.name}:`, error);
-        } finally {
-          job.isRunning = false;
-        }
-      }
-    }
-    
-    // Check every minute
-    await new Promise(resolve => setTimeout(resolve, 60000));
-  }
-}
-
-// HTTP server for status and control
-async function startStatusServer() {
-  const handler = async (req: Request): Promise<Response> => {
+  const server = Deno.serve({ port: 8000 }, async (req) => {
     const url = new URL(req.url);
     
-    if (url.pathname === "/cron-status" && req.method === "GET") {
-      return new Response(JSON.stringify({
-        success: true,
-        jobs: cronJobs.map(job => ({
-          name: job.name,
-          schedule: job.schedule,
-          lastRun: job.lastRun ? new Date(job.lastRun).toISOString() : null,
-          isRunning: job.isRunning,
-        })),
-        isShuttingDown,
-      }), {
-        headers: { "Content-Type": "application/json" },
-      });
+    if (url.pathname === "/health") {
+      return await handleHealthCheck();
     }
     
-    if (url.pathname === "/health" && req.method === "GET") {
-      return new Response(JSON.stringify({
-        status: "healthy",
-        timestamp: new Date().toISOString(),
-        uptime: process.uptime?.() || 0,
-      }), {
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-    
-    return new Response("Cron Manager", { status: 200 });
-  };
-
-  const port = parseInt(Deno.env.get("PORT") || "8001");
-  console.log(`🌐 Cron status server starting on port ${port}`);
-  
-  await serve(handler, { port });
-}
-
-// Graceful shutdown
-function setupGracefulShutdown() {
-  const shutdown = () => {
-    console.log("🛑 Received shutdown signal, stopping cron jobs...");
-    isShuttingDown = true;
-    
-    // Wait for running jobs to complete
-    const waitForJobs = async () => {
-      const runningJobs = cronJobs.filter(job => job.isRunning);
-      if (runningJobs.length > 0) {
-        console.log(`⏳ Waiting for ${runningJobs.length} jobs to complete...`);
-        await new Promise(resolve => setTimeout(resolve, 5000));
-        await waitForJobs();
-      }
-    };
-    
-    waitForJobs().then(() => {
-      console.log("✅ Graceful shutdown completed");
-      Deno.exit(0);
-    });
-  };
-
-  // Handle various shutdown signals
-  Deno.addSignalListener("SIGINT", shutdown);
-  Deno.addSignalListener("SIGTERM", shutdown);
-}
-
-// Main execution
-if (import.meta.main) {
-  console.log("🚀 Discord Role Sync Cron Manager starting...");
-  
-  if (!DISCORD_GUILD_ID) {
-    console.error("❌ DISCORD_GUILD_ID environment variable required");
-    Deno.exit(1);
-  }
-  
-  setupGracefulShutdown();
-  initializeCronJobs();
-  
-  // Start both the cron loop and status server concurrently
-  Promise.all([
-    runCronLoop(),
-    startStatusServer(),
-  ]).catch(error => {
-    console.error("❌ Fatal error:", error);
-    Deno.exit(1);
+    return new Response("Railway Cron Service", { status: 200 });
   });
+  
+  console.log("✅ Cron service health check server running on port 8000");
 } 

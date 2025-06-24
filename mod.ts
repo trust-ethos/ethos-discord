@@ -3086,95 +3086,16 @@ export async function triggerValidatorVerification(guildId?: string): Promise<vo
 
 // ===== AUTOMATED CRON-BASED OPERATIONS =====
 
-// Set up automated validator verification and batch sync using Deno.cron
-// This only runs in production deployments on Deno Deploy
-const ENABLE_AUTO_VALIDATOR_CHECK = Deno.env.get("ENABLE_AUTO_VALIDATOR_CHECK") === "true";
-const ENABLE_AUTO_BATCH_SYNC = Deno.env.get("ENABLE_AUTO_BATCH_SYNC") === "true";
-
-// Validator verification cron (every 2 hours)
-if (ENABLE_AUTO_VALIDATOR_CHECK) {
-  console.log("🕐 Setting up automated validator verification with Deno.cron (every 2 hours)");
-  
-  Deno.cron("Validator Verification", "0 */2 * * *", {
-    backoffSchedule: [1000, 5000, 10000], // Retry after 1s, 5s, 10s if failed
-  }, async () => {
-    console.log("🔍 [CRON] Starting automated validator verification");
-    
-    try {
-      const guildId = Deno.env.get("DISCORD_GUILD_ID");
-      if (!guildId) {
-        console.error("[CRON] DISCORD_GUILD_ID environment variable not set for validator cron job");
-        return;
-      }
-      
-      await performValidatorVerification(guildId);
-      console.log("✅ [CRON] Automated validator verification completed successfully");
-    } catch (error) {
-      console.error("❌ [CRON] Error in automated validator verification:", error);
-      throw error; // This will trigger the retry mechanism
-    }
-  });
-  
-  console.log("✅ Automated validator verification is enabled (every 2 hours)");
-} else {
-  console.log("ℹ️ Automated validator verification is disabled (set ENABLE_AUTO_VALIDATOR_CHECK=true to enable)");
-}
-
-// Batch sync cron (every 6 hours)
-if (ENABLE_AUTO_BATCH_SYNC) {
-  console.log("🕐 Setting up automated batch sync with Deno.cron (every 6 hours)");
-  
-  Deno.cron("Batch Role Sync", "0 */6 * * *", {
-    backoffSchedule: [5000, 15000, 30000], // Longer backoff for batch operations
-  }, async () => {
-    console.log("🔄 [CRON] Starting automated batch role sync");
-    
-    try {
-      const guildId = Deno.env.get("DISCORD_GUILD_ID");
-      if (!guildId) {
-        console.error("[CRON] DISCORD_GUILD_ID environment variable not set for batch sync cron job");
-        return;
-      }
-      
-      // Get all verified members
-      const verifiedMembers = await getVerifiedMembers(guildId);
-      console.log(`[CRON] Found ${verifiedMembers.length} verified members for batch sync`);
-      
-      if (verifiedMembers.length === 0) {
-        console.log("[CRON] No verified members found for batch sync");
-        return;
-      }
-
-      // Use batch sync function (optimized with batch APIs)
-      const result = await syncUserRolesBatch(guildId, verifiedMembers, false);
-      
-      console.log(`[CRON] Batch sync completed. Changes: ${result.changes.size}, Errors: ${result.errors.length}`);
-      
-      // Log summary
-      let totalChanges = 0;
-      for (const [userId, userChanges] of result.changes) {
-        totalChanges += userChanges.length;
-        if (userChanges.length > 0) {
-          console.log(`[CRON] User ${userId}: ${userChanges.join(", ")}`);
-        }
-      }
-      
-      if (result.errors.length > 0) {
-        console.log(`[CRON] Errors: ${result.errors.slice(0, 5).join("; ")}${result.errors.length > 5 ? ` (and ${result.errors.length - 5} more)` : ""}`);
-      }
-      
-      console.log(`✅ [CRON] Automated batch sync complete: ${result.changes.size} users changed, ${totalChanges} total changes`);
-      
-    } catch (error) {
-      console.error("❌ [CRON] Error in automated batch sync:", error);
-      throw error; // This will trigger the retry mechanism
-    }
-  });
-  
-  console.log("✅ Automated batch sync is enabled (every 6 hours)");
-} else {
-  console.log("ℹ️ Automated batch sync is disabled (set ENABLE_AUTO_BATCH_SYNC=true to enable)");
-}
+// Note: Automated cron jobs are handled by Railway's cron service
+// The cron jobs trigger HTTP endpoints on this service:
+// - Validator verification: POST /trigger-validator-check (every 2 hours)
+// - Batch role sync: POST /trigger-batch-sync (every 6 hours)
+//
+// Railway cron configuration is in railway.toml file
+console.log("ℹ️ Automated cron jobs are configured via Railway cron service");
+console.log("ℹ️ - Validator verification: every 2 hours via POST /trigger-validator-check");
+console.log("ℹ️ - Batch role sync: every 6 hours via POST /trigger-batch-sync");
+console.log("ℹ️ See railway.toml for cron configuration");
 
 // ===== BATCH API FUNCTIONS =====
 
