@@ -109,6 +109,9 @@ async function getCacheStats(): Promise<
 // Load environment variables
 const PUBLIC_KEY = Deno.env.get("DISCORD_PUBLIC_KEY");
 const APPLICATION_ID = Deno.env.get("DISCORD_APPLICATION_ID");
+
+// Discord webhook URL for role change notifications
+const WEBHOOK_URL = "https://discord.com/api/webhooks/1387294535436075069/8U4tUfX2-aYGaq7yvcsyJA3BltUfR4mwkdZP3vHlWNHF9cecv09saot6yL7nS2hqA_CX";
 // Hardcoded role IDs
 const ETHOS_VERIFIED_ROLE_ID = "1330927513056186501"; // "verified" role (Discord connected)
 const ETHOS_VERIFIED_PROFILE_ROLE_ID = "1367923031040721046"; // "Verified ethos profile" role (active profile)
@@ -161,6 +164,11 @@ async function checkUserOwnsValidator(userId: string): Promise<boolean> {
     // Check if user owns a validator using the v2 API endpoint
     const validatorResponse = await fetch(
       `https://api.ethos.network/api/v2/nfts/user/${userkey}/owns-validator`,
+      {
+        headers: {
+          "X-Ethos-Client": "ethos-discord",
+        },
+      },
     );
 
     if (!validatorResponse.ok) {
@@ -522,6 +530,119 @@ async function safeFollowUpEmbed(
   }
 }
 
+// Function to send webhook notification for role changes
+async function sendRoleChangeWebhook(
+  userId: string,
+  changes: string[],
+  context: "user-initiated" | "batch-sync" | "validator-check" | "individual-sync",
+  additionalInfo?: {
+    userScore?: number;
+    profileInfo?: string;
+    guildId?: string;
+    processedCount?: number;
+    totalCount?: number;
+  }
+): Promise<void> {
+  if (!WEBHOOK_URL || changes.length === 0) return;
+
+  try {
+    // Create context-specific message
+    let title = "";
+    let description = "";
+    let color = 0x2E7BC3; // Default blue
+    let footer = "";
+
+    switch (context) {
+      case "user-initiated":
+        title = "🔒 User Verification";
+        description = `User <@${userId}> manually verified their roles`;
+        color = 0x127F31; // Green
+        footer = "Manual verification via /ethos_verify command";
+        break;
+      
+      case "batch-sync":
+        title = "⚙️ Batch Role Sync";
+        description = `Roles updated for user <@${userId}> during batch sync`;
+        color = 0x2E7BC3; // Blue
+        footer = additionalInfo?.processedCount && additionalInfo?.totalCount 
+          ? `Batch sync progress: ${additionalInfo.processedCount}/${additionalInfo.totalCount}`
+          : "Automated batch synchronization";
+        break;
+      
+      case "validator-check":
+        title = "🛡️ Validator Verification";
+        description = `Validator roles updated for user <@${userId}>`;
+        color = 0xCC9A1A; // Yellow
+        footer = "Automated validator NFT verification";
+        break;
+      
+      case "individual-sync":
+        title = "🔄 Individual Sync";
+        description = `Roles updated for user <@${userId}> during individual sync`;
+        color = 0xC1C0B6; // Gray
+        footer = "Individual role synchronization";
+        break;
+    }
+
+    // Add score information if available
+    if (additionalInfo?.userScore !== undefined) {
+      const scoreName = getRoleNameForScore(additionalInfo.userScore);
+      description += `\n**Score:** ${additionalInfo.userScore} (${scoreName})`;
+    }
+
+    // Add profile info if available
+    if (additionalInfo?.profileInfo) {
+      description += `\n**Profile:** ${additionalInfo.profileInfo}`;
+    }
+
+    const embed = {
+      title,
+      description,
+      color,
+      fields: [
+        {
+          name: "Role Changes",
+          value: changes.join("\n"),
+          inline: false,
+        },
+      ],
+      footer: {
+        text: footer,
+      },
+      timestamp: new Date().toISOString(),
+    };
+
+    // Add guild info if available
+    if (additionalInfo?.guildId) {
+      embed.fields.push({
+        name: "Guild ID",
+        value: additionalInfo.guildId,
+        inline: true,
+      });
+    }
+
+    const response = await fetch(WEBHOOK_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        embeds: [embed],
+        username: "Ethos Role Manager",
+        avatar_url: "https://app.ethos.network/favicon.ico",
+      }),
+    });
+
+    if (!response.ok) {
+      console.error(`Failed to send webhook notification: ${response.status} ${response.statusText}`);
+    } else {
+      console.log(`📢 Webhook notification sent for user ${userId} (${context})`);
+    }
+  } catch (error) {
+    console.error("Error sending webhook notification:", error);
+  }
+}
+
 // Function to fetch Ethos profile by Discord user ID
 async function fetchEthosProfileByDiscord(
   userId: string,
@@ -543,6 +664,11 @@ async function fetchEthosProfileByDiscord(
     // First fetch the user's addresses to get their primary Ethereum address
     const addressResponse = await fetch(
       `https://api.ethos.network/api/v1/addresses/${userkey}`,
+      {
+        headers: {
+          "X-Ethos-Client": "ethos-discord",
+        },
+      },
     );
     const addressData = await addressResponse.json();
     console.log("Address API Response:", JSON.stringify(addressData, null, 2));
@@ -561,12 +687,21 @@ async function fetchEthosProfileByDiscord(
     // Fetch profile score and user statistics using the API endpoint
     const [profileResponse, userStatsResponse, topReviewResponse] =
       await Promise.all([
-        fetch(`https://api.ethos.network/api/v1/score/${userkey}`),
-        fetch(`https://api.ethos.network/api/v1/users/${userkey}/stats`),
+        fetch(`https://api.ethos.network/api/v1/score/${userkey}`, {
+          headers: {
+            "X-Ethos-Client": "ethos-discord",
+          },
+        }),
+        fetch(`https://api.ethos.network/api/v1/users/${userkey}/stats`, {
+          headers: {
+            "X-Ethos-Client": "ethos-discord",
+          },
+        }),
         fetch(`https://api.ethos.network/api/v1/activities/unified`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            "X-Ethos-Client": "ethos-discord",
           },
           body: JSON.stringify({
             target: userkey,
@@ -690,6 +825,11 @@ async function fetchEthosProfileByTwitter(handle: string) {
     // First fetch Twitter ID
     const twitterResponse = await fetch(
       `https://api.ethos.network/api/twitter/user/?username=${formattedHandle}`,
+      {
+        headers: {
+          "X-Ethos-Client": "ethos-discord",
+        },
+      },
     );
     if (!twitterResponse.ok) {
       if (twitterResponse.status === 404) {
@@ -711,12 +851,21 @@ async function fetchEthosProfileByTwitter(handle: string) {
     // Fetch profile score and user statistics using the new API endpoint
     const [profileResponse, userStatsResponse, topReviewResponse] =
       await Promise.all([
-        fetch(`https://api.ethos.network/api/v1/score/${userkey}`),
-        fetch(`https://api.ethos.network/api/v1/users/${userkey}/stats`),
+        fetch(`https://api.ethos.network/api/v1/score/${userkey}`, {
+          headers: {
+            "X-Ethos-Client": "ethos-discord",
+          },
+        }),
+        fetch(`https://api.ethos.network/api/v1/users/${userkey}/stats`, {
+          headers: {
+            "X-Ethos-Client": "ethos-discord",
+          },
+        }),
         fetch(`https://api.ethos.network/api/v1/activities/unified`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            "X-Ethos-Client": "ethos-discord",
           },
           body: JSON.stringify({
             target: userkey,
@@ -1004,6 +1153,15 @@ async function handleInteraction(
               const profile = verifyResult.profile;
               const ownsValidator = await checkUserOwnsValidator(userId);
               const scoreName = getRoleNameForScore(profile.score);
+
+              // Send webhook notification for successful role changes
+              if (verifyResult.changes.length > 0) {
+                await sendRoleChangeWebhook(userId, verifyResult.changes, "user-initiated", {
+                  userScore: profile.score,
+                  profileInfo: `${profile.name || `Discord User ${userId}`} - ${ownsValidator ? 'Has Validator NFT' : 'No Validator NFT'}`,
+                  guildId: guildId,
+                });
+              }
 
               // Create response message based on changes made
               followUpContent = "✅ Verification successful! ";
@@ -2294,6 +2452,20 @@ async function syncUserRoles(
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
 
+    // Send webhook notification for role changes
+    if (changes.length > 0) {
+      const context = isBulkOperation ? "batch-sync" : "individual-sync";
+      await sendRoleChangeWebhook(userId, changes, context, {
+        userScore: profile?.score,
+        profileInfo: profile?.hasProfile 
+          ? `Profile found - ${profile.elements?.totalReviews || 0} reviews, ${profile.elements?.vouchCount || 0} vouches`
+          : "No valid profile",
+        guildId: guildId,
+        processedCount: userNumber,
+        totalCount: totalUsers,
+      });
+    }
+
     // Mark as synced after successful role updates
     await markUserSynced(userId);
     return { success: true, changes };
@@ -2919,6 +3091,18 @@ async function verifyUserValidator(
       console.error(`${progressPrefix}[VALIDATOR-CHECK] Failed to add regular role ${targetRegularRole} to user ${userId}: ${addResponse.status}`);
     }
 
+    // Send webhook notification for validator demotion
+    if (changes.length > 0) {
+      await sendRoleChangeWebhook(userId, changes, "validator-check", {
+        profileInfo: !("error" in profile) && typeof profile.score === "number" 
+          ? `Score: ${profile.score} - No longer owns validator NFT`
+          : "No longer owns validator NFT",
+        guildId: guildId,
+        processedCount: userNumber,
+        totalCount: totalUsers,
+      });
+    }
+
     return { success: true, changes, demoted: true };
 
   } catch (error) {
@@ -3111,12 +3295,18 @@ async function fetchEthosProfilesBatch(userIds: string[]): Promise<Map<string, a
     const [scoresResponse, statsResponse] = await Promise.all([
       fetch(`https://api.ethos.network/api/v2/score/userkeys`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "X-Ethos-Client": "ethos-discord",
+        },
         body: JSON.stringify({ userkeys })
       }),
       fetch(`https://api.ethos.network/api/v2/users/by/discord`, {
         method: "POST", 
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "X-Ethos-Client": "ethos-discord",
+        },
         body: JSON.stringify({ discordIds: userIds })  // Use raw Discord IDs
       })
     ]);
@@ -3264,8 +3454,16 @@ async function fetchEthosProfilesBatch(userIds: string[]): Promise<Map<string, a
           
           // Fetch individual profile data
           const [individualScoreResponse, individualStatsResponse] = await Promise.all([
-            fetch(`https://api.ethos.network/api/v1/score/${userkey}`),
-            fetch(`https://api.ethos.network/api/v1/users/${userkey}/stats`)
+            fetch(`https://api.ethos.network/api/v1/score/${userkey}`, {
+              headers: {
+                "X-Ethos-Client": "ethos-discord",
+              },
+            }),
+            fetch(`https://api.ethos.network/api/v1/users/${userkey}/stats`, {
+              headers: {
+                "X-Ethos-Client": "ethos-discord",
+              },
+            })
           ]);
           
           let profileData: any = { hasProfile: false };
@@ -3349,6 +3547,11 @@ async function checkUserHasEthosProfile(userId: string): Promise<boolean> {
     // First fetch the user's addresses to see if they have an Ethos profile
     const profileResponse = await fetch(
       `https://api.ethos.network/api/v1/score/${userkey}`,
+      {
+        headers: {
+          "X-Ethos-Client": "ethos-discord",
+        },
+      },
     );
 
     // If we get a 200 OK response, the user has a profile
@@ -3555,6 +3758,17 @@ async function syncUserRolesBatch(
 
         if (userChanges.length > 0) {
           changes.set(userId, userChanges);
+          
+          // Send webhook notification for batch sync changes
+          await sendRoleChangeWebhook(userId, userChanges, "batch-sync", {
+            userScore: profile?.score,
+            profileInfo: profile?.hasProfile 
+              ? `Profile found - ${profile.elements?.totalReviews || 0} reviews, ${profile.elements?.vouchCount || 0} vouches`
+              : "No valid profile",
+            guildId: guildId,
+            processedCount: processedCount,
+            totalCount: usersToSync.length,
+          });
         }
 
         // Mark as synced
@@ -3570,6 +3784,21 @@ async function syncUserRolesBatch(
     }
 
     console.log(`[BATCH-SYNC] Completed batch sync. Changes: ${changes.size}, Errors: ${errors.length}`);
+    
+    // Send summary webhook notification for batch completion
+    if (changes.size > 0) {
+      const summaryChanges = [`✅ Batch sync completed: ${changes.size} users updated out of ${usersToSync.length} total`];
+      if (errors.length > 0) {
+        summaryChanges.push(`❌ ${errors.length} errors encountered`);
+      }
+      
+      await sendRoleChangeWebhook("BATCH_SUMMARY", summaryChanges, "batch-sync", {
+        profileInfo: `Processed ${usersToSync.length} users total`,
+        guildId: guildId,
+        totalCount: usersToSync.length,
+      });
+    }
+    
     return { success: true, changes, errors };
 
   } catch (error) {
