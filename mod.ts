@@ -510,6 +510,34 @@ async function sendPublicFollowUpEmbedMessage(
   }
 }
 
+// Function to send public follow-up message after deferred response
+async function sendPublicFollowUpMessage(
+  interactionId: string,
+  interactionToken: string,
+  content: string,
+): Promise<void> {
+  try {
+    const url = `https://discord.com/api/v10/webhooks/${APPLICATION_ID}/${interactionToken}`;
+
+    const response = await discordApiCall(url, {
+      method: "POST",
+      body: JSON.stringify({
+        content,
+        // No flags = public message
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      console.error(`Failed to send public follow-up message: ${response.status} ${errorData}`);
+      throw new Error(`Failed to send public follow-up message: ${response.status}`);
+    }
+  } catch (error) {
+    console.error("Error sending public follow-up message:", error);
+    throw error;
+  }
+}
+
 // Helper function to safely send follow-up messages with token check
 async function safeFollowUp(
   interaction: { id: string; token?: string },
@@ -1227,7 +1255,7 @@ async function handleInteraction(
         const deferredResponse = {
           type: InteractionResponseType.DeferredChannelMessageWithSource,
           data: {
-            // No flags = public message
+            flags: 0, // Explicitly set to 0 for public message
           },
         };
 
@@ -1256,7 +1284,7 @@ async function handleInteraction(
             const profile = await fetchEthosProfileByDiscord(userId, avatarUrl);
 
             if ("error" in profile) {
-              await sendFollowUpMessage(interaction.id, interaction.token, profile.error);
+              await sendPublicFollowUpMessage(interaction.id, interaction.token, profile.error);
               return;
             }
 
@@ -1324,7 +1352,7 @@ async function handleInteraction(
             console.error("Error in async ethos command:", error);
             
             try {
-              await sendFollowUpMessage(interaction.id, interaction.token, 
+              await sendPublicFollowUpMessage(interaction.id, interaction.token, 
                 "❌ An error occurred while fetching the profile. Please try again later.");
             } catch (followUpError) {
               console.error("Error sending follow-up message:", followUpError);
@@ -1350,7 +1378,7 @@ async function handleInteraction(
         const deferredResponse = {
           type: InteractionResponseType.DeferredChannelMessageWithSource,
           data: {
-            // No flags = public message
+            flags: 0, // Explicitly set to 0 for public message
           },
         };
 
@@ -1360,7 +1388,7 @@ async function handleInteraction(
             const profile = await fetchEthosProfileByTwitter(twitterHandle);
 
             if ("error" in profile) {
-              await sendFollowUpMessage(interaction.id, interaction.token, profile.error);
+              await sendPublicFollowUpMessage(interaction.id, interaction.token, profile.error);
               return;
             }
 
@@ -1417,7 +1445,7 @@ async function handleInteraction(
             console.error("Error in async ethosx command:", error);
             
             try {
-              await sendFollowUpMessage(interaction.id, interaction.token, 
+              await sendPublicFollowUpMessage(interaction.id, interaction.token, 
                 "❌ An error occurred while fetching the profile. Please try again later.");
             } catch (followUpError) {
               console.error("Error sending follow-up message:", followUpError);
