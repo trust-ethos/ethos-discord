@@ -1,0 +1,45 @@
+name: Batch Sync
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # Every 6 hours
+  workflow_dispatch:       # Allow manual triggering
+
+jobs:
+  batch-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Batch Sync
+        run: |
+          echo "🔄 Running batch role sync..."
+          response=$(curl -s -X POST "https://delicious-babies-production.up.railway.app/trigger-batch-sync" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          
+          echo "Response: $response"
+          
+          # Check if the response indicates success
+          if echo "$response" | grep -q '"success":true'; then
+            echo "✅ Batch sync triggered successfully"
+          else
+            echo "❌ Batch sync failed"
+            echo "$response"
+            exit 1
+          fi
+
+  notify-completion:
+    needs: [batch-sync]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log completion status
+        run: |
+          echo "🏁 Batch sync completed"
+          echo "Status: ${{ needs.batch-sync.result }}"
+          
+          if [[ "${{ needs.batch-sync.result }}" == "failure" ]]; then
+            echo "❌ Batch sync failed"
+            exit 1
+          else
+            echo "✅ Batch sync completed successfully"
+          fi 

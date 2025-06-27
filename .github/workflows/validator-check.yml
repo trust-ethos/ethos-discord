@@ -1,0 +1,45 @@
+name: Validator Check
+
+on:
+  schedule:
+    - cron: '0 */2 * * *'  # Every 2 hours
+  workflow_dispatch:       # Allow manual triggering
+
+jobs:
+  validator-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Validator Verification
+        run: |
+          echo "🔍 Running validator verification..."
+          response=$(curl -s -X POST "https://delicious-babies-production.up.railway.app/trigger-validator-check" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          
+          echo "Response: $response"
+          
+          # Check if the response indicates success
+          if echo "$response" | grep -q '"success":true'; then
+            echo "✅ Validator verification triggered successfully"
+          else
+            echo "❌ Validator verification failed"
+            echo "$response"
+            exit 1
+          fi
+
+  notify-completion:
+    needs: [validator-check]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log completion status
+        run: |
+          echo "🏁 Validator check completed"
+          echo "Status: ${{ needs.validator-check.result }}"
+          
+          if [[ "${{ needs.validator-check.result }}" == "failure" ]]; then
+            echo "❌ Validator check failed"
+            exit 1
+          else
+            echo "✅ Validator check completed successfully"
+          fi 
