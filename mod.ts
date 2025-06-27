@@ -111,7 +111,7 @@ const PUBLIC_KEY = Deno.env.get("DISCORD_PUBLIC_KEY");
 const APPLICATION_ID = Deno.env.get("DISCORD_APPLICATION_ID");
 
 // Discord webhook URL for role change notifications
-const WEBHOOK_URL = "https://discord.com/api/webhooks/1387294535436075069/8U4tUfX2-aYGaq7yvcsyJA3BltUfR4mwkdZP3vHlWNHF9cecv09saot6yL7nS2hqA_CX";
+const WEBHOOK_URL = Deno.env.get("DISCORD_WEBHOOK_URL");
 // Hardcoded role IDs
 const ETHOS_VERIFIED_ROLE_ID = "1330927513056186501"; // "verified" role (Discord connected)
 const ETHOS_VERIFIED_PROFILE_ROLE_ID = "1367923031040721046"; // "Verified ethos profile" role (active profile)
