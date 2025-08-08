@@ -115,23 +115,32 @@ const WEBHOOK_URL = Deno.env.get("DISCORD_WEBHOOK_URL");
 // Hardcoded role IDs
 const ETHOS_VERIFIED_ROLE_ID = "1330927513056186501"; // "verified" role (Discord connected)
 const ETHOS_VERIFIED_PROFILE_ROLE_ID = "1367923031040721046"; // "Verified ethos profile" role (active profile)
-// Score-based role IDs (regular)
+// Score-based role IDs (regular) - Updated for new scoring system
+const ETHOS_ROLE_DISTINGUISHED = Deno.env.get("ETHOS_ROLE_DISTINGUISHED") ||
+  "1403227201809285214"; // Score 2200-2399
 const ETHOS_ROLE_EXEMPLARY = Deno.env.get("ETHOS_ROLE_EXEMPLARY") ||
-  "1253205892917231677"; // Score >= 2000
+  "1253205892917231677"; // Score 2000-2199
 const ETHOS_ROLE_REPUTABLE = Deno.env.get("ETHOS_ROLE_REPUTABLE") ||
-  "1253206005169258537"; // Score >= 1600
+  "1253206005169258537"; // Score 1800-1999
+const ETHOS_ROLE_ESTABLISHED = Deno.env.get("ETHOS_ROLE_ESTABLISHED") ||
+  "1403226783540842546"; // Score 1600-1799
+const ETHOS_ROLE_KNOWN = Deno.env.get("ETHOS_ROLE_KNOWN") ||
+  "1403227015959548005"; // Score 1400-1599
 const ETHOS_ROLE_NEUTRAL = Deno.env.get("ETHOS_ROLE_NEUTRAL") ||
-  "1253206143182831637"; // Score >= 1200
+  "1253206143182831637"; // Score 1200-1399
 const ETHOS_ROLE_QUESTIONABLE = Deno.env.get("ETHOS_ROLE_QUESTIONABLE") ||
-  "1253206252306305024"; // Score >= 800
+  "1253206252306305024"; // Score 800-1199
 const ETHOS_ROLE_UNTRUSTED = Deno.env.get("ETHOS_ROLE_UNTRUSTED") ||
   "1253206385877975043"; // Score < 800
 
-// Validator score-based role IDs
-const ETHOS_VALIDATOR_EXEMPLARY = "1377685521723293706"; // Score >= 2000 + validator
-const ETHOS_VALIDATOR_REPUTABLE = "1377477396759842936"; // Score >= 1600 + validator
-const ETHOS_VALIDATOR_NEUTRAL = "1377685710026571876"; // Score >= 1200 + validator
-const ETHOS_VALIDATOR_QUESTIONABLE = "1377688531522158632"; // Score >= 800 + validator
+// Validator score-based role IDs - Updated for new scoring system
+const ETHOS_VALIDATOR_DISTINGUISHED = "1403227263318757470"; // Score 2200-2399 + validator
+const ETHOS_VALIDATOR_EXEMPLARY = "1377685521723293706"; // Score 2000-2199 + validator
+const ETHOS_VALIDATOR_REPUTABLE = "1377477396759842936"; // Score 1800-1999 + validator
+const ETHOS_VALIDATOR_ESTABLISHED = "1403226922443345981"; // Score 1600-1799 + validator
+const ETHOS_VALIDATOR_KNOWN = "1403227117415825458"; // Score 1400-1599 + validator
+const ETHOS_VALIDATOR_NEUTRAL = "1377685710026571876"; // Score 1200-1399 + validator
+const ETHOS_VALIDATOR_QUESTIONABLE = "1377688531522158632"; // Score 800-1199 + validator
 // No untrusted validator role - untrusted users get regular untrusted role even if they have validator
 
 if (!PUBLIC_KEY || !APPLICATION_ID) {
@@ -1080,31 +1089,40 @@ async function verifyRequest(request: Request): Promise<APIInteraction | null> {
   }
 }
 
-// Function to get role ID based on score (regular roles)
+// Function to get role ID based on score (regular roles) - Updated for new scoring system
 function getRoleIdForScore(score: number): string {
-  if (score >= 2000) return ETHOS_ROLE_EXEMPLARY;
-  if (score >= 1600) return ETHOS_ROLE_REPUTABLE;
-  if (score >= 1200) return ETHOS_ROLE_NEUTRAL;
-  if (score >= 800) return ETHOS_ROLE_QUESTIONABLE;
-  return ETHOS_ROLE_UNTRUSTED;
+  if (score >= 2200) return ETHOS_ROLE_DISTINGUISHED; // 2200-2399
+  if (score >= 2000) return ETHOS_ROLE_EXEMPLARY;     // 2000-2199
+  if (score >= 1800) return ETHOS_ROLE_REPUTABLE;     // 1800-1999
+  if (score >= 1600) return ETHOS_ROLE_ESTABLISHED;   // 1600-1799
+  if (score >= 1400) return ETHOS_ROLE_KNOWN;         // 1400-1599
+  if (score >= 1200) return ETHOS_ROLE_NEUTRAL;       // 1200-1399
+  if (score >= 800) return ETHOS_ROLE_QUESTIONABLE;   // 800-1199
+  return ETHOS_ROLE_UNTRUSTED;                        // < 800
 }
 
-// Function to get validator role ID based on score
+// Function to get validator role ID based on score - Updated for new scoring system
 function getValidatorRoleIdForScore(score: number): string | null {
-  if (score >= 2000) return ETHOS_VALIDATOR_EXEMPLARY;
-  if (score >= 1600) return ETHOS_VALIDATOR_REPUTABLE;
-  if (score >= 1200) return ETHOS_VALIDATOR_NEUTRAL;
-  if (score >= 800) return ETHOS_VALIDATOR_QUESTIONABLE;
+  if (score >= 2200) return ETHOS_VALIDATOR_DISTINGUISHED; // 2200-2399
+  if (score >= 2000) return ETHOS_VALIDATOR_EXEMPLARY;     // 2000-2199
+  if (score >= 1800) return ETHOS_VALIDATOR_REPUTABLE;     // 1800-1999
+  if (score >= 1600) return ETHOS_VALIDATOR_ESTABLISHED;   // 1600-1799
+  if (score >= 1400) return ETHOS_VALIDATOR_KNOWN;         // 1400-1599
+  if (score >= 1200) return ETHOS_VALIDATOR_NEUTRAL;       // 1200-1399
+  if (score >= 800) return ETHOS_VALIDATOR_QUESTIONABLE;   // 800-1199
   return null; // No validator role for untrusted - they get regular untrusted role
 }
 
-// Function to get role name based on score
+// Function to get role name based on score - Updated for new scoring system
 function getRoleNameForScore(score: number): string {
-  if (score >= 2000) return "Exemplary";
-  if (score >= 1600) return "Reputable";
-  if (score >= 1200) return "Neutral";
-  if (score >= 800) return "Questionable";
-  return "Untrusted";
+  if (score >= 2200) return "Distinguished"; // 2200-2399
+  if (score >= 2000) return "Exemplary";     // 2000-2199
+  if (score >= 1800) return "Reputable";     // 1800-1999
+  if (score >= 1600) return "Established";   // 1600-1799
+  if (score >= 1400) return "Known";         // 1400-1599
+  if (score >= 1200) return "Neutral";       // 1200-1399
+  if (score >= 800) return "Questionable";   // 800-1199
+  return "Untrusted";                        // < 800
 }
 
 // Handle Discord interactions
@@ -1478,16 +1496,22 @@ async function handleInteraction(
 }
 
 function getScoreLabel(score: number): string {
-  if (score >= 2000) return "exemplary";
-  if (score >= 1600) return "reputable";
-  if (score >= 1200) return "neutral";
-  if (score >= 800) return "questionable";
-  return "untrusted";
+  if (score >= 2200) return "distinguished"; // 2200-2399
+  if (score >= 2000) return "exemplary";     // 2000-2199
+  if (score >= 1800) return "reputable";     // 1800-1999
+  if (score >= 1600) return "established";   // 1600-1799
+  if (score >= 1400) return "known";         // 1400-1599
+  if (score >= 1200) return "neutral";       // 1200-1399
+  if (score >= 800) return "questionable";   // 800-1199
+  return "untrusted";                        // < 800
 }
 
 function getScoreColor(score: number): number {
+  if (score >= 2200) return 0x9B59B6; // Distinguished - Purple
   if (score >= 2000) return 0x127F31; // Exemplary - Green
-  if (score >= 1600) return 0x2E7BC3; // Reputable - Blue
+  if (score >= 1800) return 0x2E7BC3; // Reputable - Blue
+  if (score >= 1600) return 0x17A2B8; // Established - Teal
+  if (score >= 1400) return 0x28A745; // Known - Light Green
   if (score >= 1200) return 0xC1C0B6; // Neutral - Gray
   if (score >= 800) return 0xCC9A1A; // Questionable - Yellow
   return 0xB72B38; // Untrusted - Red
