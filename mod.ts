@@ -2195,12 +2195,12 @@ function generateSyncId(): string {
   return `sync_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 }
 
-// Function to get all verified members from a guild
+// Function to get all members with any Ethos roles from a guild
 async function getVerifiedMembers(guildId: string): Promise<string[]> {
   try {
-    console.log("Fetching verified members from guild:", guildId);
+    console.log("Fetching members with Ethos roles from guild:", guildId);
 
-    // Get all members with the verified role
+    // Get all members from the guild
     const url =
       `https://discord.com/api/v10/guilds/${guildId}/members?limit=1000`;
 
@@ -2215,15 +2215,54 @@ async function getVerifiedMembers(guildId: string): Promise<string[]> {
 
     const members = await response.json();
 
-    // Filter members who have the verified role
-    const verifiedMembers = members
-      .filter((member: any) => member.roles.includes(ETHOS_VERIFIED_ROLE_ID))
+    // All Ethos role IDs to check for
+    const allEthosRoles = [
+      ETHOS_VERIFIED_ROLE_ID,
+      ETHOS_VERIFIED_PROFILE_ROLE_ID,
+      // Regular roles - all tiers
+      ETHOS_ROLE_DISTINGUISHED,
+      ETHOS_ROLE_EXEMPLARY,
+      ETHOS_ROLE_REPUTABLE,
+      ETHOS_ROLE_ESTABLISHED,
+      ETHOS_ROLE_KNOWN,
+      ETHOS_ROLE_NEUTRAL,
+      ETHOS_ROLE_QUESTIONABLE,
+      ETHOS_ROLE_UNTRUSTED,
+      // Validator roles - all tiers
+      ETHOS_VALIDATOR_DISTINGUISHED,
+      ETHOS_VALIDATOR_EXEMPLARY,
+      ETHOS_VALIDATOR_REPUTABLE,
+      ETHOS_VALIDATOR_ESTABLISHED,
+      ETHOS_VALIDATOR_KNOWN,
+      ETHOS_VALIDATOR_NEUTRAL,
+      ETHOS_VALIDATOR_QUESTIONABLE,
+    ];
+
+    // Filter members who have ANY Ethos role
+    const membersWithEthosRoles = members
+      .filter((member: any) => {
+        return member.roles.some((roleId: string) => allEthosRoles.includes(roleId));
+      })
       .map((member: any) => member.user.id);
 
-    console.log(`Found ${verifiedMembers.length} verified members`);
-    return verifiedMembers;
+    console.log(`Found ${membersWithEthosRoles.length} members with Ethos roles`);
+    console.log(`Total guild members checked: ${members.length}`);
+    
+    // Log which roles were found for debugging
+    const roleCount: Record<string, number> = {};
+    members.forEach((member: any) => {
+      member.roles.forEach((roleId: string) => {
+        if (allEthosRoles.includes(roleId)) {
+          roleCount[roleId] = (roleCount[roleId] || 0) + 1;
+        }
+      });
+    });
+    
+    console.log("Ethos role distribution:", roleCount);
+    
+    return membersWithEthosRoles;
   } catch (error) {
-    console.error("Error fetching verified members:", error);
+    console.error("Error fetching members with Ethos roles:", error);
     return [];
   }
 }
