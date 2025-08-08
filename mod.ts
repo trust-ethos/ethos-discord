@@ -734,25 +734,19 @@ async function fetchEthosProfileByDiscord(
             "X-Ethos-Client": "ethos-discord",
           },
         }),
-        fetch(`https://api.ethos.network/api/v1/activities/unified`, {
+        fetch(`https://api.ethos.network/api/v2/activities/profile/received`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             "X-Ethos-Client": "ethos-discord",
           },
           body: JSON.stringify({
-            target: userkey,
-            direction: "subject",
-            orderBy: {
-              field: "votes",
-              direction: "desc",
-            },
+            userkey,
             filter: ["review"],
             excludeHistorical: true,
-            pagination: {
-              offsets: {},
-              limit: 1,
-            },
+            orderBy: { field: "timestamp", direction: "desc" },
+            limit: 1,
+            offset: 0,
           }),
         }),
       ]);
@@ -786,8 +780,9 @@ async function fetchEthosProfileByDiscord(
       JSON.stringify(topReviewResponseData, null, 2),
     );
 
-    const topReviewData = topReviewResponseData.ok &&
-      topReviewResponseData.data?.values?.[0]?.data;
+    // v2 response: values is at top-level (no ok/data wrapper)
+    const topReviewItem = topReviewResponseData?.values?.[0];
+    const topReviewData = topReviewItem?.data;
 
     // Extract review stats from the new unified response
     const totalReviews = userStats.ok
@@ -839,8 +834,8 @@ async function fetchEthosProfileByDiscord(
         ? {
           comment: topReviewData.comment,
           score: topReviewData.score,
-          upvotes: topReviewResponseData.data.values[0].votes.upvotes,
-          authorName: topReviewResponseData.data.values[0].author.name,
+          upvotes: (topReviewItem?.votes?.upvotes ?? 0),
+          authorName: (topReviewItem?.author?.name ?? "Unknown"),
         }
         : null,
     };
@@ -898,25 +893,19 @@ async function fetchEthosProfileByTwitter(handle: string) {
             "X-Ethos-Client": "ethos-discord",
           },
         }),
-        fetch(`https://api.ethos.network/api/v1/activities/unified`, {
+        fetch(`https://api.ethos.network/api/v2/activities/profile/received`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             "X-Ethos-Client": "ethos-discord",
           },
           body: JSON.stringify({
-            target: userkey,
-            direction: "subject",
-            orderBy: {
-              field: "votes",
-              direction: "desc",
-            },
+            userkey,
             filter: ["review"],
             excludeHistorical: true,
-            pagination: {
-              offsets: {},
-              limit: 1,
-            },
+            orderBy: { field: "timestamp", direction: "desc" },
+            limit: 1,
+            offset: 0,
           }),
         }),
       ]);
@@ -947,8 +936,9 @@ async function fetchEthosProfileByTwitter(handle: string) {
       JSON.stringify(topReviewResponseData, null, 2),
     );
 
-    const topReviewData = topReviewResponseData.ok &&
-      topReviewResponseData.data?.values?.[0]?.data;
+    // v2 response: values is at top-level
+    const topReviewItem = topReviewResponseData?.values?.[0];
+    const topReviewData = topReviewItem?.data;
 
     // Extract review stats from the new unified response
     const totalReviews = userStats.ok
@@ -998,8 +988,8 @@ async function fetchEthosProfileByTwitter(handle: string) {
         ? {
           comment: topReviewData.comment,
           score: topReviewData.score,
-          upvotes: topReviewResponseData.data.values[0].votes.upvotes,
-          authorName: topReviewResponseData.data.values[0].author.name,
+          upvotes: (topReviewItem?.votes?.upvotes ?? 0),
+          authorName: (topReviewItem?.author?.name ?? "Unknown"),
         }
         : null,
     };
@@ -2195,12 +2185,12 @@ function generateSyncId(): string {
   return `sync_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 }
 
-// Function to get all members with any Ethos roles from a guild
+// Function to get all verified members from a guild
 async function getVerifiedMembers(guildId: string): Promise<string[]> {
   try {
-    console.log("Fetching members with Ethos roles from guild:", guildId);
+    console.log("Fetching verified members from guild:", guildId);
 
-    // Get all members from the guild
+    // Get all members with the verified role
     const url =
       `https://discord.com/api/v10/guilds/${guildId}/members?limit=1000`;
 
@@ -2215,54 +2205,15 @@ async function getVerifiedMembers(guildId: string): Promise<string[]> {
 
     const members = await response.json();
 
-    // All Ethos role IDs to check for
-    const allEthosRoles = [
-      ETHOS_VERIFIED_ROLE_ID,
-      ETHOS_VERIFIED_PROFILE_ROLE_ID,
-      // Regular roles - all tiers
-      ETHOS_ROLE_DISTINGUISHED,
-      ETHOS_ROLE_EXEMPLARY,
-      ETHOS_ROLE_REPUTABLE,
-      ETHOS_ROLE_ESTABLISHED,
-      ETHOS_ROLE_KNOWN,
-      ETHOS_ROLE_NEUTRAL,
-      ETHOS_ROLE_QUESTIONABLE,
-      ETHOS_ROLE_UNTRUSTED,
-      // Validator roles - all tiers
-      ETHOS_VALIDATOR_DISTINGUISHED,
-      ETHOS_VALIDATOR_EXEMPLARY,
-      ETHOS_VALIDATOR_REPUTABLE,
-      ETHOS_VALIDATOR_ESTABLISHED,
-      ETHOS_VALIDATOR_KNOWN,
-      ETHOS_VALIDATOR_NEUTRAL,
-      ETHOS_VALIDATOR_QUESTIONABLE,
-    ];
-
-    // Filter members who have ANY Ethos role
-    const membersWithEthosRoles = members
-      .filter((member: any) => {
-        return member.roles.some((roleId: string) => allEthosRoles.includes(roleId));
-      })
+    // Filter members who have the verified role
+    const verifiedMembers = members
+      .filter((member: any) => member.roles.includes(ETHOS_VERIFIED_ROLE_ID))
       .map((member: any) => member.user.id);
 
-    console.log(`Found ${membersWithEthosRoles.length} members with Ethos roles`);
-    console.log(`Total guild members checked: ${members.length}`);
-    
-    // Log which roles were found for debugging
-    const roleCount: Record<string, number> = {};
-    members.forEach((member: any) => {
-      member.roles.forEach((roleId: string) => {
-        if (allEthosRoles.includes(roleId)) {
-          roleCount[roleId] = (roleCount[roleId] || 0) + 1;
-        }
-      });
-    });
-    
-    console.log("Ethos role distribution:", roleCount);
-    
-    return membersWithEthosRoles;
+    console.log(`Found ${verifiedMembers.length} verified members`);
+    return verifiedMembers;
   } catch (error) {
-    console.error("Error fetching members with Ethos roles:", error);
+    console.error("Error fetching verified members:", error);
     return [];
   }
 }
@@ -2272,23 +2223,15 @@ function getCurrentEthosRoles(userRoles: string[]): string[] {
   const ethosRoles = [
     ETHOS_VERIFIED_ROLE_ID,
     ETHOS_VERIFIED_PROFILE_ROLE_ID,
-    // Regular roles - all tiers
-    ETHOS_ROLE_DISTINGUISHED,
+    ETHOS_VALIDATOR_EXEMPLARY,
+    ETHOS_VALIDATOR_REPUTABLE,
+    ETHOS_VALIDATOR_NEUTRAL,
+    ETHOS_VALIDATOR_QUESTIONABLE,
     ETHOS_ROLE_EXEMPLARY,
     ETHOS_ROLE_REPUTABLE,
-    ETHOS_ROLE_ESTABLISHED,
-    ETHOS_ROLE_KNOWN,
     ETHOS_ROLE_NEUTRAL,
     ETHOS_ROLE_QUESTIONABLE,
     ETHOS_ROLE_UNTRUSTED,
-    // Validator roles - all tiers
-    ETHOS_VALIDATOR_DISTINGUISHED,
-    ETHOS_VALIDATOR_EXEMPLARY,
-    ETHOS_VALIDATOR_REPUTABLE,
-    ETHOS_VALIDATOR_ESTABLISHED,
-    ETHOS_VALIDATOR_KNOWN,
-    ETHOS_VALIDATOR_NEUTRAL,
-    ETHOS_VALIDATOR_QUESTIONABLE,
   ];
 
   return userRoles.filter((roleId) => ethosRoles.includes(roleId));
