@@ -1115,6 +1115,8 @@ function getValidatorRoleIdForScore(score: number): string | null {
 
 // Function to get role name based on score - Updated for new scoring system
 function getRoleNameForScore(score: number): string {
+  if (score >= 2600) return "Renowned";      // 2600-2800
+  if (score >= 2400) return "Revered";       // 2400-2599
   if (score >= 2200) return "Distinguished"; // 2200-2399
   if (score >= 2000) return "Exemplary";     // 2000-2199
   if (score >= 1800) return "Reputable";     // 1800-1999
@@ -1496,6 +1498,8 @@ async function handleInteraction(
 }
 
 function getScoreLabel(score: number): string {
+  if (score >= 2600) return "renowned";      // 2600-2800
+  if (score >= 2400) return "revered";       // 2400-2599
   if (score >= 2200) return "distinguished"; // 2200-2399
   if (score >= 2000) return "exemplary";     // 2000-2199
   if (score >= 1800) return "reputable";     // 1800-1999
@@ -1507,6 +1511,8 @@ function getScoreLabel(score: number): string {
 }
 
 function getScoreColor(score: number): number {
+  if (score >= 2600) return 0xFFD700; // Renowned - Gold
+  if (score >= 2400) return 0xFF4500; // Revered - Orange Red
   if (score >= 2200) return 0x9B59B6; // Distinguished - Purple
   if (score >= 2000) return 0x127F31; // Exemplary - Green
   if (score >= 1800) return 0x2E7BC3; // Reputable - Blue
