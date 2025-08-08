@@ -1511,8 +1511,8 @@ function getScoreLabel(score: number): string {
 }
 
 function getScoreColor(score: number): number {
-  if (score >= 2600) return 0xFFD700; // Renowned - Gold
-  if (score >= 2400) return 0xFF4500; // Revered - Orange Red
+  if (score >= 2600) return 0x7E51B9; // Renowned - Purple (#7E51B9)
+  if (score >= 2400) return 0x836DA6; // Revered - Light Purple (#836DA6)
   if (score >= 2200) return 0x9B59B6; // Distinguished - Purple
   if (score >= 2000) return 0x127F31; // Exemplary - Green
   if (score >= 1800) return 0x2E7BC3; // Reputable - Blue
