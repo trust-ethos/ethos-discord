@@ -115,6 +115,8 @@ const WEBHOOK_URL = Deno.env.get("DISCORD_WEBHOOK_URL");
 // Hardcoded role IDs
 const ETHOS_VERIFIED_ROLE_ID = "1330927513056186501"; // "verified" role (Discord connected)
 const ETHOS_VERIFIED_PROFILE_ROLE_ID = "1367923031040721046"; // "Verified ethos profile" role (active profile)
+// Role to remove upon verification if present (legacy/temporary role)
+const ROLE_TO_REMOVE_ON_VERIFY = "1410662938376802415";
 // Score-based role IDs (regular) - Updated for new scoring system
 const ETHOS_ROLE_DISTINGUISHED = Deno.env.get("ETHOS_ROLE_DISTINGUISHED") ||
   "1403227201809285214"; // Score 2200-2399
@@ -2348,6 +2350,40 @@ async function syncUserRoles(
       );
       const changes: string[] = [];
 
+      // If this is a forced individual verification (ethos_verify), also remove the special role if present
+      if (!isBulkOperation && forceSync) {
+        if (currentRoles.includes(ROLE_TO_REMOVE_ON_VERIFY)) {
+          const removeSpecialUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${ROLE_TO_REMOVE_ON_VERIFY}`;
+          const removeSpecialResponse = await discordApiCall(removeSpecialUrl, { method: "DELETE" });
+          if (removeSpecialResponse.ok) {
+            changes.push("Removed special role (default/incomplete profile)");
+            console.log(`${progressPrefix}[${operationType}] Removed special role ${ROLE_TO_REMOVE_ON_VERIFY} from user ${userId} (default/incomplete profile)`);
+          }
+          // Use shorter delay for individual operations
+          const delay = isBulkOperation
+            ? SYNC_CONFIG.DELAY_BETWEEN_ROLE_OPS
+            : SYNC_CONFIG.INDIVIDUAL_USER_DELAY;
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+      }
+
+      // If this is a forced individual verification (ethos_verify), also remove the special role if present
+      if (!isBulkOperation && forceSync) {
+        if (currentRoles.includes(ROLE_TO_REMOVE_ON_VERIFY)) {
+          const removeSpecialUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${ROLE_TO_REMOVE_ON_VERIFY}`;
+          const removeSpecialResponse = await discordApiCall(removeSpecialUrl, { method: "DELETE" });
+          if (removeSpecialResponse.ok) {
+            changes.push("Removed special role");
+            console.log(`${progressPrefix}[${operationType}] Removed special role ${ROLE_TO_REMOVE_ON_VERIFY} from user ${userId}`);
+          }
+          // Use shorter delay for individual operations
+          const delay = isBulkOperation
+            ? SYNC_CONFIG.DELAY_BETWEEN_ROLE_OPS
+            : SYNC_CONFIG.INDIVIDUAL_USER_DELAY;
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+      }
+
       for (const roleId of rolesToRemove) {
         const removeUrl =
           `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${roleId}`;
@@ -2444,8 +2480,23 @@ async function syncUserRoles(
       !expectedRoles.includes(roleId)
     );
 
+    // If this is a forced individual verification (ethos_verify), also remove the special role if present
+    const changes: string[] = [];
+    if (!isBulkOperation && forceSync) {
+      if (currentRoles.includes(ROLE_TO_REMOVE_ON_VERIFY)) {
+        const removeSpecialUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${ROLE_TO_REMOVE_ON_VERIFY}`;
+        const removeSpecialResponse = await discordApiCall(removeSpecialUrl, { method: "DELETE" });
+        if (removeSpecialResponse.ok) {
+          changes.push("Removed special role");
+          console.log(`${progressPrefix}[${operationType}] Removed special role ${ROLE_TO_REMOVE_ON_VERIFY} from user ${userId}`);
+        }
+        const delay = isBulkOperation ? SYNC_CONFIG.DELAY_BETWEEN_ROLE_OPS : SYNC_CONFIG.INDIVIDUAL_USER_DELAY;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+
     // Early exit if no changes needed
-    if (rolesToAdd.length === 0 && rolesToRemove.length === 0) {
+    if (rolesToAdd.length === 0 && rolesToRemove.length === 0 && changes.length === 0) {
       console.log(
         `${progressPrefix}[${operationType}] User ${userId} already has correct roles, no changes needed`,
       );
@@ -2453,8 +2504,6 @@ async function syncUserRoles(
       await markUserSynced(userId);
       return { success: true, changes: [] };
     }
-
-    const changes: string[] = [];
 
     // Remove roles that shouldn't be there
     for (const roleId of rolesToRemove) {
