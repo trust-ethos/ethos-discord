@@ -573,13 +573,14 @@ async function safeFollowUpEmbed(
 async function sendRoleChangeWebhook(
   userId: string,
   changes: string[],
-  context: "user-initiated" | "batch-sync" | "validator-check" | "individual-sync",
+  context: "user-initiated" | "batch-sync" | "validator-check" | "individual-sync" | "recalc-command",
   additionalInfo?: {
     userScore?: number;
     profileInfo?: string;
     guildId?: string;
     processedCount?: number;
     totalCount?: number;
+    triggeredBy?: string;
   }
 ): Promise<void> {
   if (!WEBHOOK_URL || changes.length === 0) return;
@@ -620,6 +621,15 @@ async function sendRoleChangeWebhook(
         description = `Roles updated for user <@${userId}> during individual sync`;
         color = 0xC1C0B6; // Gray
         footer = "Individual role synchronization";
+        break;
+
+      case "recalc-command":
+        title = "📊 Role Recalculation";
+        description = `Roles corrected for user <@${userId}> during high-score recalculation`;
+        color = 0x9B59B6; // Purple
+        footer = additionalInfo?.triggeredBy
+          ? `Recalculation triggered by <@${additionalInfo.triggeredBy}>`
+          : "Admin-triggered role recalculation";
         break;
     }
 
@@ -1466,6 +1476,121 @@ async function handleInteraction(
         })();
 
         return deferredResponse;
+      } // Handle ethos_recalc command (recalculate roles for high-score members)
+      else if (commandName === "ethos_recalc") {
+        const guildId = interaction.guild_id;
+        const userId = interaction.member?.user?.id;
+
+        if (!guildId) {
+          return {
+            type: InteractionResponseType.ChannelMessageWithSource,
+            data: {
+              content: "This command can only be used in a server.",
+              flags: 64, // Ephemeral
+            },
+          };
+        }
+
+        // Check if user has admin permissions (ADMINISTRATOR = 0x8)
+        const permissions = BigInt(interaction.member?.permissions || "0");
+        const isAdmin = (permissions & BigInt(0x8)) !== BigInt(0);
+
+        if (!isAdmin) {
+          return {
+            type: InteractionResponseType.ChannelMessageWithSource,
+            data: {
+              content: "This command requires administrator permissions.",
+              flags: 64, // Ephemeral
+            },
+          };
+        }
+
+        // Immediately respond with "thinking" to prevent timeout
+        const deferredResponse = {
+          type: InteractionResponseType.DeferredChannelMessageWithSource,
+          data: {
+            flags: 64, // Ephemeral - only visible to the admin
+          },
+        };
+
+        // Perform the recalculation asynchronously
+        (async () => {
+          try {
+            console.log(`[RECALC] Starting recalculation triggered by user ${userId}`);
+
+            // Get all members with high score roles (1400+)
+            const highScoreMembers = await getMembersWithHighScoreRoles(guildId);
+
+            if (highScoreMembers.length === 0) {
+              await safeFollowUp(interaction, "No members found with roles for scores 1400+.");
+              return;
+            }
+
+            await safeFollowUp(interaction, `Found ${highScoreMembers.length} members with high score roles. Starting recalculation...`);
+
+            let processedCount = 0;
+            let changedCount = 0;
+            let errorCount = 0;
+            const changes: string[] = [];
+
+            // Process each member
+            for (const memberId of highScoreMembers) {
+              try {
+                // Clear cache to ensure fresh check
+                await clearUserCache(memberId);
+
+                // Sync the user's roles (this will compare expected vs actual and fix mismatches)
+                const result = await syncUserRoles(guildId, memberId, processedCount + 1, highScoreMembers.length, true, false);
+
+                processedCount++;
+
+                if (result.success && result.changes.length > 0) {
+                  changedCount++;
+                  changes.push(`<@${memberId}>: ${result.changes.join(", ")}`);
+
+                  // Send webhook notification for role changes
+                  await sendRoleChangeWebhook(memberId, result.changes, "recalc-command", {
+                    guildId: guildId,
+                    triggeredBy: userId,
+                  });
+                }
+              } catch (error) {
+                console.error(`[RECALC] Error processing member ${memberId}:`, error);
+                errorCount++;
+              }
+
+              // Small delay to avoid rate limiting
+              await new Promise((resolve) => setTimeout(resolve, 100));
+            }
+
+            // Build summary message
+            let summary = `**Recalculation Complete**\n`;
+            summary += `- Processed: ${processedCount}/${highScoreMembers.length} members\n`;
+            summary += `- Role changes: ${changedCount}\n`;
+            summary += `- Errors: ${errorCount}\n`;
+
+            if (changes.length > 0) {
+              summary += `\n**Changes made:**\n`;
+              // Limit to first 10 changes to avoid message length limits
+              const displayChanges = changes.slice(0, 10);
+              summary += displayChanges.join("\n");
+              if (changes.length > 10) {
+                summary += `\n... and ${changes.length - 10} more changes`;
+              }
+            } else {
+              summary += `\nNo role changes were needed - all roles are correct.`;
+            }
+
+            await safeFollowUp(interaction, summary);
+            console.log(`[RECALC] Completed. Processed: ${processedCount}, Changed: ${changedCount}, Errors: ${errorCount}`);
+
+          } catch (error) {
+            console.error("[RECALC] Error in recalculation:", error);
+            await safeFollowUp(interaction, "❌ An error occurred during recalculation. Please try again later.");
+          }
+        })();
+
+        return deferredResponse;
       } // Unknown command
       else {
         return {
@@ -2216,6 +2341,51 @@ async function getVerifiedMembers(guildId: string): Promise<string[]> {
     return verifiedMembers;
   } catch (error) {
     console.error("Error fetching verified members:", error);
+    return [];
+  }
+}
+
+// Function to get all members with roles for scores >= 1400
+async function getMembersWithHighScoreRoles(guildId: string): Promise<string[]> {
+  try {
+    console.log("[RECALC] Fetching members with high score roles (1400+) from guild:", guildId);
+
+    // All roles that indicate score >= 1400 (both regular and validator versions)
+    const highScoreRoles = [
+      ETHOS_ROLE_KNOWN,                // 1400-1599
+      ETHOS_ROLE_ESTABLISHED,          // 1600-1799
+      ETHOS_ROLE_REPUTABLE,            // 1800-1999
+      ETHOS_ROLE_EXEMPLARY,            // 2000-2199
+      ETHOS_ROLE_DISTINGUISHED,        // 2200+
+      ETHOS_VALIDATOR_KNOWN,           // 1400-1599 + validator
+      ETHOS_VALIDATOR_ESTABLISHED,     // 1600-1799 + validator
+      ETHOS_VALIDATOR_REPUTABLE,       // 1800-1999 + validator
+      ETHOS_VALIDATOR_EXEMPLARY,       // 2000-2199 + validator
+      ETHOS_VALIDATOR_DISTINGUISHED,   // 2200+ + validator
+    ];
+
+    const url = `https://discord.com/api/v10/guilds/${guildId}/members?limit=1000`;
+
+    const response = await discordApiCall(url, {
+      method: "GET",
+    });
+
+    if (!response.ok) {
+      console.error(`[RECALC] Failed to fetch guild members: ${response.status}`);
+      return [];
+    }
+
+    const members = await response.json();
+
+    // Filter members who have any of the high score roles
+    const highScoreMembers = members
+      .filter((member: any) => member.roles.some((roleId: string) => highScoreRoles.includes(roleId)))
+      .map((member: any) => member.user.id);
+
+    console.log(`[RECALC] Found ${highScoreMembers.length} members with high score roles`);
+    return highScoreMembers;
+  } catch (error) {
+    console.error("[RECALC] Error fetching members with high score roles:", error);
     return [];
   }
 }
