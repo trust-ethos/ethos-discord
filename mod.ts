@@ -1199,6 +1199,13 @@ async function handleInteraction(
                 followUpContent =
                   "You don't have an Ethos profile OR you haven't connected Discord to your Ethos account yet. Ethos users can connect their Discord account at https://app.ethos.network/profile/settings?tab=social";
               }
+            } else if (verifyResult.profile && "error" in verifyResult.profile) {
+              // Profile fetch returned an error (no profile or Discord not connected)
+              followUpContent = verifyResult.profile.error + "\n\nEthos users can connect their Discord account at https://app.ethos.network/profile/settings?tab=social";
+            } else if (!verifyResult.profile) {
+              // No profile returned at all
+              followUpContent =
+                "You don't have an Ethos profile OR you haven't connected Discord to your Ethos account yet. Ethos users can connect their Discord account at https://app.ethos.network/profile/settings?tab=social";
             } else {
               const profile = verifyResult.profile;
               const ownsValidator = await checkUserOwnsValidator(userId);
