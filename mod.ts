@@ -2222,8 +2222,16 @@ function handleGatewayMessageCreate(message: any) {
     return;
   }
 
+  // If replying to another message, include that message's content as context
+  let fullQuestion = question;
+  if (message.referenced_message?.content) {
+    const replyAuthor = message.referenced_message.author?.username || "someone";
+    fullQuestion = `[Replying to ${replyAuthor}'s message: "${message.referenced_message.content}"]\n\nMy question: ${question}`;
+    console.log(`📩 Including replied-to message from ${replyAuthor}`);
+  }
+
   // Process the question asynchronously (errors are handled inside handleMentionQuestion)
-  handleMentionQuestion(message.channel_id, message.id, question).catch((error) => {
+  handleMentionQuestion(message.channel_id, message.id, fullQuestion).catch((error) => {
     console.error("Unexpected error in handleMentionQuestion:", error);
   });
 }
