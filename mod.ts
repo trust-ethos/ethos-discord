@@ -178,6 +178,7 @@ interface CachedArticle {
 
 const ARTICLES_CACHE_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours
 const ARTICLES_KV_KEY = ["help_center_articles"];
+const ARTICLES_KV_CHUNK_PREFIX = ["help_center_articles_chunk"];
 let articlesCache: CachedArticle[] | null = null;
 let articlesCacheTimestamp = 0;
 
@@ -272,14 +273,23 @@ async function loadArticlesCache(): Promise<CachedArticle[]> {
   // Check KV cache
   if (kv) {
     try {
-      const kvResult = await kv.get(ARTICLES_KV_KEY);
-      if (kvResult.value) {
-        const stored = kvResult.value as { articles: CachedArticle[]; timestamp: number };
-        if ((now - stored.timestamp) < ARTICLES_CACHE_DURATION_MS) {
-          articlesCache = stored.articles;
-          articlesCacheTimestamp = stored.timestamp;
-          console.log(`📚 Loaded ${stored.articles.length} articles from KV cache`);
-          return articlesCache;
+      const kvMeta = await kv.get(ARTICLES_KV_KEY);
+      if (kvMeta.value) {
+        const meta = kvMeta.value as { count: number; timestamp: number };
+        if ((now - meta.timestamp) < ARTICLES_CACHE_DURATION_MS) {
+          const articles: CachedArticle[] = [];
+          for (let i = 0; i < meta.count; i++) {
+            const chunk = await kv.get([...ARTICLES_KV_CHUNK_PREFIX, i]);
+            if (chunk.value) {
+              articles.push(...(chunk.value as CachedArticle[]));
+            }
+          }
+          if (articles.length > 0) {
+            articlesCache = articles;
+            articlesCacheTimestamp = meta.timestamp;
+            console.log(`📚 Loaded ${articles.length} articles from KV cache (${meta.count} chunks)`);
+            return articlesCache;
+          }
         }
       }
     } catch (error) {
@@ -292,10 +302,19 @@ async function loadArticlesCache(): Promise<CachedArticle[]> {
   articlesCache = articles;
   articlesCacheTimestamp = now;
 
-  // Persist to KV
+  // Persist to KV in chunks (max ~60KB per KV value)
   if (kv) {
     try {
-      await kv.set(ARTICLES_KV_KEY, { articles, timestamp: now });
+      const CHUNK_SIZE = 5; // 5 articles per chunk to stay well under 64KB
+      const chunks: CachedArticle[][] = [];
+      for (let i = 0; i < articles.length; i += CHUNK_SIZE) {
+        chunks.push(articles.slice(i, i + CHUNK_SIZE));
+      }
+      for (let i = 0; i < chunks.length; i++) {
+        await kv.set([...ARTICLES_KV_CHUNK_PREFIX, i], chunks[i]);
+      }
+      await kv.set(ARTICLES_KV_KEY, { count: chunks.length, timestamp: now });
+      console.log(`💾 Saved ${articles.length} articles to KV in ${chunks.length} chunks`);
     } catch (error) {
       console.warn("⚠️ Error saving articles to KV:", error);
     }
@@ -313,7 +332,16 @@ async function refreshArticlesCache(): Promise<CachedArticle[]> {
 
   if (kv) {
     try {
-      await kv.set(ARTICLES_KV_KEY, { articles, timestamp: now });
+      const CHUNK_SIZE = 5;
+      const chunks: CachedArticle[][] = [];
+      for (let i = 0; i < articles.length; i += CHUNK_SIZE) {
+        chunks.push(articles.slice(i, i + CHUNK_SIZE));
+      }
+      for (let i = 0; i < chunks.length; i++) {
+        await kv.set([...ARTICLES_KV_CHUNK_PREFIX, i], chunks[i]);
+      }
+      await kv.set(ARTICLES_KV_KEY, { count: chunks.length, timestamp: now });
+      console.log(`💾 Saved ${articles.length} articles to KV in ${chunks.length} chunks`);
     } catch (error) {
       console.warn("⚠️ Error saving articles to KV:", error);
     }
