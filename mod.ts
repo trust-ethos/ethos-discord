@@ -1387,132 +1387,8 @@ async function handleInteraction(
     case InteractionType.ApplicationCommand: {
       const commandName = interaction.data?.name;
 
-      // Handle ethos command (Discord profiles)
-      if (commandName === "ethos") {
-        // With a User type option, Discord will automatically provide the user ID
-        const userId = interaction.data.options?.[0].value?.toString();
-        if (!userId) {
-          return {
-            type: InteractionResponseType.ChannelMessageWithSource,
-            data: {
-              content: "Please mention a Discord user!",
-              flags: 64, // Ephemeral
-            },
-          };
-        }
-
-        // Immediately respond with "thinking" to prevent timeout
-        const deferredResponse = {
-          type: InteractionResponseType.DeferredChannelMessageWithSource,
-          data: {
-            flags: 0, // Explicitly set to 0 for public message
-          },
-        };
-
-        // Process asynchronously and send follow-up
-        (async () => {
-          try {
-            console.log("Discord user ID from interaction:", userId);
-
-            // Get the Discord user information
-            const userData = interaction.data.resolved?.users?.[userId];
-            const username = userData?.username || "Unknown User";
-            // Use display name (global_name) if available, otherwise use username
-            const displayName = userData?.global_name || username;
-
-            console.log("Discord username:", username);
-            console.log("Discord display name:", displayName);
-
-            // Get user's Discord avatar URL if available
-            let avatarUrl: string | undefined = undefined;
-            if (userData?.avatar) {
-              // Discord avatar format: https://cdn.discordapp.com/avatars/{user.id}/{user.avatar}.png
-              avatarUrl =
-                `https://cdn.discordapp.com/avatars/${userId}/${userData.avatar}.png`;
-            }
-
-            const profile = await fetchEthosProfileByDiscord(userId, avatarUrl);
-
-            if ("error" in profile) {
-              await sendPublicFollowUpMessage(interaction.id, interaction.token, profile.error);
-              return;
-            }
-
-            // Display the display name in the title
-            const title = `Ethos profile for ${displayName}`;
-
-            // Use the primary address for the profile URL if available, otherwise fall back to Discord
-            let profileUrl;
-            if (profile.primaryAddress) {
-              profileUrl =
-                `https://app.ethos.network/profile/${profile.primaryAddress}?src=discord-agent`;
-            } else {
-              profileUrl =
-                `https://app.ethos.network/profile/discord/${profile.userId}?src=discord-agent`;
-            }
-
-            // Send follow-up with embed (public)
-            await sendPublicFollowUpEmbedMessage(interaction.id, interaction.token, {
-              title,
-              url: profileUrl,
-              description: `${displayName} is considered **${
-                getScoreLabel(profile.score)
-              }**.`,
-              color: getScoreColor(profile.score),
-              thumbnail: {
-                // Use Discord avatar if available, otherwise use Ethos avatar or default
-                url: avatarUrl || profile.avatar ||
-                  "https://cdn.discordapp.com/embed/avatars/0.png",
-              },
-              fields: [
-                {
-                  name: "Ethos score",
-                  value: String(profile.score ?? "N/A"),
-                  inline: true,
-                },
-                {
-                  name: "Reviews",
-                  value: `${profile.elements?.totalReviews} (${
-                    profile.elements?.positivePercentage?.toFixed(2)
-                  }% positive)`,
-                  inline: true,
-                },
-                {
-                  name: "Vouched",
-                  value:
-                    `${profile.elements?.vouchBalance}e (${profile.elements?.vouchCount} vouchers)`,
-                  inline: true,
-                },
-                ...(profile.topReview
-                  ? [{
-                    name: "Most upvoted review",
-                    value:
-                      `*"${profile.topReview.comment}"* - ${profile.topReview.authorName} (${profile.topReview.upvotes} upvotes)`,
-                    inline: false,
-                  }]
-                  : []),
-              ],
-              footer: {
-                text: "Data from https://app.ethos.network",
-              },
-              timestamp: new Date().toISOString(),
-            });
-
-          } catch (error) {
-            console.error("Error in async ethos command:", error);
-            
-            try {
-              await sendPublicFollowUpMessage(interaction.id, interaction.token, 
-                "❌ An error occurred while fetching the profile. Please try again later.");
-            } catch (followUpError) {
-              console.error("Error sending follow-up message:", followUpError);
-            }
-          }
-        })();
-
-        return deferredResponse;
-      } // Handle ethosx command (Twitter profiles)
-      else if (commandName === "ethosx") {
+      // Handle ethosx command (Twitter profiles)
+      if (commandName === "ethosx") {
         const twitterHandle = interaction.data.options?.[0].value?.toString();
         if (!twitterHandle) {
           return {
@@ -1909,6 +1785,30 @@ function handleGatewayMessageCreate(message: any) {
 
   console.log(`📩 Question: "${question}" | ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY ? "set" : "MISSING"} | INTERCOM_ACCESS_TOKEN: ${INTERCOM_ACCESS_TOKEN ? "set" : "MISSING"}`);
 
+  // Check for user mention-based Ethos profile lookups
+  const userMentions = mentions.filter((m: any) => m.id !== gatewayBotUserId);
+
+  let ethosTargetUsers: Array<{ id: string; username: string; global_name?: string; avatar?: string }> = [];
+
+  if (userMentions.length > 0) {
+    // Explicit @mentions alongside bot mention
+    ethosTargetUsers = userMentions;
+  } else if (message.referenced_message && !question) {
+    // Reply with just @EthosBot — look up replied-to author
+    const replyAuthor = message.referenced_message.author;
+    if (replyAuthor && !replyAuthor.bot) {
+      ethosTargetUsers = [replyAuthor];
+    }
+  }
+
+  if (ethosTargetUsers.length > 0) {
+    const cappedTargets = ethosTargetUsers.slice(0, 10); // Discord 10-embed limit
+    handleMentionEthos(message.channel_id, message.id, cappedTargets).catch((error) => {
+      console.error("Unexpected error in handleMentionEthos:", error);
+    });
+    return;
+  }
+
   // Check for "recalc" trigger
   if (question.toLowerCase() === "recalc") {
     const guildId = message.guild_id;
@@ -2210,6 +2110,122 @@ async function handleMentionVerify(channelId: string, messageId: string, guildId
   } catch (error) {
     console.error("Error in handleMentionVerify:", error);
     const errorMsg = "❌ An error occurred while verifying your profile. Please try again later.";
+    if (placeholderId) {
+      await editGatewayChannelMessage(channelId, placeholderId, { content: errorMsg });
+    } else {
+      await sendGatewayChannelMessage(channelId, errorMsg, messageId);
+    }
+  }
+}
+
+async function handleMentionEthos(
+  channelId: string,
+  messageId: string,
+  targetUsers: Array<{ id: string; username: string; global_name?: string; avatar?: string }>,
+): Promise<void> {
+  const plural = targetUsers.length > 1 ? "s" : "";
+  const placeholderId = await sendGatewayChannelMessage(
+    channelId,
+    `🔍 Looking up Ethos profile${plural}...`,
+    messageId,
+  );
+
+  try {
+    const results = await Promise.all(
+      targetUsers.map(async (user) => {
+        try {
+          const avatarUrl = user.avatar
+            ? `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png`
+            : undefined;
+          const profile = await fetchEthosProfileByDiscord(user.id, avatarUrl);
+          const displayName = user.global_name || user.username;
+          return { user, displayName, avatarUrl, profile, error: null };
+        } catch (error) {
+          const displayName = user.global_name || user.username;
+          return { user, displayName, avatarUrl: undefined, profile: null, error };
+        }
+      }),
+    );
+
+    const embeds: any[] = [];
+    const errors: string[] = [];
+
+    for (const result of results) {
+      if (result.error || !result.profile) {
+        errors.push(`Could not fetch profile for ${result.displayName}.`);
+        continue;
+      }
+
+      if ("error" in result.profile) {
+        errors.push(`${result.displayName}: ${result.profile.error}`);
+        continue;
+      }
+
+      const profile = result.profile;
+
+      let profileUrl;
+      if (profile.primaryAddress) {
+        profileUrl = `https://app.ethos.network/profile/${profile.primaryAddress}?src=discord-agent`;
+      } else {
+        profileUrl = `https://app.ethos.network/profile/discord/${profile.userId}?src=discord-agent`;
+      }
+
+      embeds.push({
+        title: `Ethos profile for ${result.displayName}`,
+        url: profileUrl,
+        description: `${result.displayName} is considered **${getScoreLabel(profile.score)}**.`,
+        color: getScoreColor(profile.score),
+        thumbnail: {
+          url: result.avatarUrl || profile.avatar || "https://cdn.discordapp.com/embed/avatars/0.png",
+        },
+        fields: [
+          {
+            name: "Ethos score",
+            value: String(profile.score ?? "N/A"),
+            inline: true,
+          },
+          {
+            name: "Reviews",
+            value: `${profile.elements?.totalReviews} (${profile.elements?.positivePercentage?.toFixed(2)}% positive)`,
+            inline: true,
+          },
+          {
+            name: "Vouched",
+            value: `${profile.elements?.vouchBalance}e (${profile.elements?.vouchCount} vouchers)`,
+            inline: true,
+          },
+          ...(profile.topReview
+            ? [{
+              name: "Most upvoted review",
+              value: `*"${profile.topReview.comment}"* - ${profile.topReview.authorName} (${profile.topReview.upvotes} upvotes)`,
+              inline: false,
+            }]
+            : []),
+        ],
+        footer: {
+          text: "Data from https://app.ethos.network",
+        },
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const editOptions: { content?: string; embeds?: any[] } = {};
+
+    if (embeds.length > 0) {
+      editOptions.embeds = embeds;
+      editOptions.content = errors.length > 0 ? errors.join("\n") : "";
+    } else {
+      editOptions.content = errors.join("\n") || "❌ Could not fetch any profiles.";
+    }
+
+    if (placeholderId) {
+      await editGatewayChannelMessage(channelId, placeholderId, editOptions);
+    } else {
+      await sendGatewayChannelMessage(channelId, editOptions.content || "❌ Could not fetch any profiles.", messageId);
+    }
+  } catch (error) {
+    console.error("Error in handleMentionEthos:", error);
+    const errorMsg = "❌ An error occurred while fetching profiles. Please try again later.";
     if (placeholderId) {
       await editGatewayChannelMessage(channelId, placeholderId, { content: errorMsg });
     } else {
