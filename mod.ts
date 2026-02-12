@@ -350,7 +350,168 @@ async function refreshArticlesCache(): Promise<CachedArticle[]> {
   return articles;
 }
 
-// Call Claude API with help center articles as context
+// ===== ETHOS CLI TOOL DEFINITIONS =====
+const ETHOS_CLI_TOOLS = [
+  {
+    name: "ethos_user_info",
+    description: "Get a user's Ethos profile including credibility score, XP, review/vouch counts, and connected addresses. Use for questions about someone's score, reputation, or profile.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        identifier: {
+          type: "string",
+          description: "Username, ENS name, Ethereum address, or Ethos profile ID",
+        },
+      },
+      required: ["identifier"],
+    },
+  },
+  {
+    name: "ethos_user_search",
+    description: "Search for Ethos users by name or handle. Use when the user asks to find someone or you need to look up a username.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        query: {
+          type: "string",
+          description: "Search query (name, handle, or partial match)",
+        },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "ethos_review_list",
+    description: "List reviews written about a user. Use for questions about someone's reviews, positive/negative feedback, or what others think of them.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        identifier: {
+          type: "string",
+          description: "Username, ENS name, Ethereum address, or Ethos profile ID",
+        },
+      },
+      required: ["identifier"],
+    },
+  },
+  {
+    name: "ethos_vouch_list",
+    description: "List vouches for a user. Use for questions about who vouched for someone or their vouch history.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        identifier: {
+          type: "string",
+          description: "Username, ENS name, Ethereum address, or Ethos profile ID",
+        },
+      },
+      required: ["identifier"],
+    },
+  },
+  {
+    name: "ethos_xp_rank",
+    description: "Get a user's XP leaderboard ranking. Use for questions about someone's rank or standing on the leaderboard.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        identifier: {
+          type: "string",
+          description: "Username, ENS name, Ethereum address, or Ethos profile ID",
+        },
+      },
+      required: ["identifier"],
+    },
+  },
+];
+
+// Run an ethos CLI command with timeout and JSON parsing
+async function runEthosCli(args: string[]): Promise<{ success: boolean; data?: any; error?: string }> {
+  try {
+    const command = new Deno.Command("ethos", {
+      args: [...args, "--json"],
+      stdout: "piped",
+      stderr: "piped",
+    });
+
+    const process = command.spawn();
+
+    // 15-second timeout
+    const timeout = setTimeout(() => {
+      try {
+        process.kill("SIGTERM");
+      } catch {
+        // Process may have already exited
+      }
+    }, 15_000);
+
+    const output = await process.output();
+    clearTimeout(timeout);
+
+    const stdout = new TextDecoder().decode(output.stdout);
+    const stderr = new TextDecoder().decode(output.stderr);
+
+    if (!output.success) {
+      return { success: false, error: stderr || `CLI exited with code ${output.code}` };
+    }
+
+    try {
+      const data = JSON.parse(stdout);
+      return { success: true, data };
+    } catch {
+      // If JSON parse fails, return raw output
+      return { success: true, data: stdout.trim() };
+    }
+  } catch (error) {
+    return { success: false, error: `CLI execution failed: ${error.message}` };
+  }
+}
+
+// Validate CLI input to prevent abuse
+function validateCliInput(input: string): boolean {
+  return /^[a-zA-Z0-9._\-:@]+$/.test(input) && input.length <= 100;
+}
+
+// Execute an Ethos tool call and return the result
+async function executeEthosTool(toolName: string, toolInput: Record<string, string>): Promise<string> {
+  const MAX_OUTPUT_CHARS = 8000;
+
+  const id = toolInput.identifier || toolInput.query || "";
+  if (!validateCliInput(id)) {
+    return JSON.stringify({ error: "Invalid input: only alphanumeric characters, dots, hyphens, underscores, colons, and @ are allowed (max 100 chars)" });
+  }
+
+  let args: string[];
+  switch (toolName) {
+    case "ethos_user_info":
+      args = ["user", "info", id];
+      break;
+    case "ethos_user_search":
+      args = ["user", "search", id];
+      break;
+    case "ethos_review_list":
+      args = ["review", "list", id];
+      break;
+    case "ethos_vouch_list":
+      args = ["vouch", "list", id];
+      break;
+    case "ethos_xp_rank":
+      args = ["xp", "rank", id];
+      break;
+    default:
+      return JSON.stringify({ error: `Unknown tool: ${toolName}` });
+  }
+
+  const result = await runEthosCli(args);
+  let output = JSON.stringify(result);
+
+  if (output.length > MAX_OUTPUT_CHARS) {
+    output = output.substring(0, MAX_OUTPUT_CHARS) + "...(truncated)";
+  }
+
+  return output;
+}
+
+// Call Claude API with help center articles as context and Ethos CLI tools
 async function askClaude(question: string, articles: CachedArticle[]): Promise<string> {
   if (!ANTHROPIC_API_KEY) {
     throw new Error("ANTHROPIC_API_KEY not configured");
@@ -361,7 +522,12 @@ async function askClaude(question: string, articles: CachedArticle[]): Promise<s
     `## ${a.title}\n${a.description ? a.description + "\n" : ""}${a.body}\n${a.url ? `URL: ${a.url}` : ""}`
   ).join("\n\n---\n\n");
 
-  const systemPrompt = `You are the Ethos Network help center assistant. Answer the user's question using ONLY the help center articles provided below. Be concise and helpful. If the answer is not covered in the articles, say so honestly.
+  const systemPrompt = `You are the Ethos Network assistant. You have two sources of information:
+
+1. **Help center articles** (below) — use these for how-to questions, explanations of features, and general guidance.
+2. **Live data tools** — use these to look up specific user data like credibility scores, reviews, vouches, and rankings.
+
+For how-to questions (e.g. "how do I verify?"), answer from the articles. For questions about specific users or live data (e.g. "what's vitalik's score?"), use the tools. You can combine both sources when helpful.
 
 When relevant, include links to specific articles using their URLs.
 
@@ -371,7 +537,63 @@ Keep your response under 1800 characters so it fits in a Discord message.
 HELP CENTER ARTICLES:
 ${articleContext}`;
 
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
+  const messages: Array<{ role: string; content: any }> = [
+    { role: "user", content: question },
+  ];
+
+  const MAX_TOOL_ROUNDS = 3;
+
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-5-20250929",
+        max_tokens: 2048,
+        system: systemPrompt,
+        messages,
+        tools: ETHOS_CLI_TOOLS,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Claude API error ${response.status}: ${errorText}`);
+    }
+
+    const data = await response.json();
+
+    // If stop reason is not tool_use, extract final text and return
+    if (data.stop_reason !== "tool_use") {
+      const textBlock = data.content?.find((b: any) => b.type === "text");
+      return textBlock?.text || "I wasn't able to generate an answer. Please try again.";
+    }
+
+    // Process tool calls
+    messages.push({ role: "assistant", content: data.content });
+
+    const toolResults: Array<{ type: string; tool_use_id: string; content: string }> = [];
+    for (const block of data.content) {
+      if (block.type === "tool_use") {
+        console.log(`🔧 Executing tool: ${block.name}`, block.input);
+        const result = await executeEthosTool(block.name, block.input);
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: block.id,
+          content: result,
+        });
+      }
+    }
+
+    messages.push({ role: "user", content: toolResults });
+  }
+
+  // If we exhausted all rounds, make one final call without tools to get a text answer
+  const finalResponse = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "x-api-key": ANTHROPIC_API_KEY,
@@ -380,19 +602,19 @@ ${articleContext}`;
     },
     body: JSON.stringify({
       model: "claude-sonnet-4-5-20250929",
-      max_tokens: 1024,
+      max_tokens: 2048,
       system: systemPrompt,
-      messages: [{ role: "user", content: question }],
+      messages,
     }),
   });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Claude API error ${response.status}: ${errorText}`);
+  if (!finalResponse.ok) {
+    const errorText = await finalResponse.text();
+    throw new Error(`Claude API error ${finalResponse.status}: ${errorText}`);
   }
 
-  const data = await response.json();
-  const textBlock = data.content?.find((b: any) => b.type === "text");
+  const finalData = await finalResponse.json();
+  const textBlock = finalData.content?.find((b: any) => b.type === "text");
   return textBlock?.text || "I wasn't able to generate an answer. Please try again.";
 }
 
@@ -1915,7 +2137,7 @@ async function handleMentionQuestion(channelId: string, messageId: string, quest
           description: answer,
           color: 0x2E7BC3, // Ethos blue
           footer: {
-            text: "AI-generated answer based on Ethos help articles — may not be 100% accurate",
+            text: "AI-generated answer — may not be 100% accurate",
           },
           timestamp: new Date().toISOString(),
         }],
@@ -1926,7 +2148,7 @@ async function handleMentionQuestion(channelId: string, messageId: string, quest
         description: answer,
         color: 0x2E7BC3, // Ethos blue
         footer: {
-          text: "AI-generated answer based on Ethos help articles — may not be 100% accurate",
+          text: "AI-generated answer — may not be 100% accurate",
         },
         timestamp: new Date().toISOString(),
       });

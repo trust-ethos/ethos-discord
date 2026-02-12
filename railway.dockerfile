@@ -1,5 +1,12 @@
 FROM denoland/deno:1.40.5
 
+# Install Node.js and ethos-cli
+RUN apt-get update && apt-get install -y curl \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && npm install -g @trust-ethos/cli \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Set working directory
 WORKDIR /app
 
@@ -13,4 +20,4 @@ RUN deno cache --allow-net --allow-env --allow-read --allow-write --unstable dep
 EXPOSE 8000
 
 # Start the application with all required flags
-CMD ["deno", "run", "--allow-net", "--allow-env", "--allow-read", "--allow-write", "--unstable", "mod.ts"] 
+CMD ["deno", "run", "--allow-net", "--allow-env", "--allow-read", "--allow-write", "--allow-run=ethos", "--unstable", "mod.ts"] 
