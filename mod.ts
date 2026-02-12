@@ -2187,9 +2187,13 @@ function handleGatewayMessageCreate(message: any) {
   const isMentioned = mentions.some((m: any) => m.id === gatewayBotUserId);
   if (!isMentioned) return;
 
+  console.log(`📩 @mention received from ${message.author?.username} in channel ${message.channel_id}`);
+
   // Strip the bot mention(s) to extract the question
   const mentionPattern = new RegExp(`<@!?${gatewayBotUserId}>`, "g");
   const question = message.content.replace(mentionPattern, "").trim();
+
+  console.log(`📩 Question: "${question}" | ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY ? "set" : "MISSING"} | INTERCOM_ACCESS_TOKEN: ${INTERCOM_ACCESS_TOKEN ? "set" : "MISSING"}`);
 
   if (!question) {
     sendGatewayChannelMessage(
