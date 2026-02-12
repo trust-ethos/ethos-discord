@@ -424,10 +424,27 @@ const ETHOS_CLI_TOOLS = [
   },
 ];
 
+// Find the ethos CLI binary path
+function findEthosCliPath(): string {
+  // Try common paths where npm installs global binaries
+  for (const path of ["/usr/bin/ethos", "/usr/local/bin/ethos"]) {
+    try {
+      Deno.statSync(path);
+      return path;
+    } catch {
+      // Not found, try next
+    }
+  }
+  // Fall back to bare name (relies on PATH)
+  return "ethos";
+}
+
+const ETHOS_CLI_PATH = findEthosCliPath();
+
 // Run an ethos CLI command with timeout and JSON parsing
 async function runEthosCli(args: string[]): Promise<{ success: boolean; data?: any; error?: string }> {
   try {
-    const command = new Deno.Command("ethos", {
+    const command = new Deno.Command(ETHOS_CLI_PATH, {
       args: [...args, "--json"],
       stdout: "piped",
       stderr: "piped",
