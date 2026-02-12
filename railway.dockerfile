@@ -1,4 +1,4 @@
-FROM denoland/deno:1.40.5
+FROM denoland/deno:debian
 
 # Install Node.js and ethos-cli
 RUN apt-get update && apt-get install -y curl \
@@ -16,11 +16,11 @@ WORKDIR /app
 # Copy all source code
 COPY . .
 
-# Cache dependencies and main application with all required flags
-RUN deno cache --allow-net --allow-env --allow-read --allow-write --unstable deps.ts mod.ts
+# Cache dependencies
+RUN deno cache deps.ts mod.ts
 
 # Expose port
 EXPOSE 8000
 
 # Start the application with all required flags
-CMD ["deno", "run", "--allow-net", "--allow-env", "--allow-read", "--allow-write", "--allow-run", "--unstable", "mod.ts"] 
+CMD ["deno", "run", "--allow-net", "--allow-env", "--allow-read", "--allow-write", "--allow-run", "--unstable-kv", "mod.ts"] 
