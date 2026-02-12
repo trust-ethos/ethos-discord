@@ -2241,40 +2241,73 @@ function handleGatewayMessageCreate(message: any) {
     return;
   }
 
-  // Process the question asynchronously
+  // Process the question asynchronously (errors are handled inside handleMentionQuestion)
   handleMentionQuestion(message.channel_id, message.id, question).catch((error) => {
-    console.error("Error handling mention question:", error);
-    sendGatewayChannelMessage(
-      message.channel_id,
-      "❌ Sorry, I ran into an error while answering your question. Please try again or use the `/ask` command.",
-      message.id,
-    ).catch((err) => console.error("Error sending error reply:", err));
+    console.error("Unexpected error in handleMentionQuestion:", error);
   });
 }
 
-async function handleMentionQuestion(channelId: string, messageId: string, question: string) {
-  const articles = await loadArticlesCache();
+async function handleMentionQuestion(channelId: string, messageId: string, question: string): Promise<void> {
+  // Send immediate placeholder reply
+  const placeholderId = await sendGatewayChannelMessage(
+    channelId,
+    "\u{1F50D} Looking into that...",
+    messageId,
+  );
 
-  if (articles.length === 0) {
-    await sendGatewayChannelMessage(
-      channelId,
-      "No help center articles are available right now. Please try again later.",
-      messageId,
-    );
-    return;
+  try {
+    const articles = await loadArticlesCache();
+
+    if (articles.length === 0) {
+      if (placeholderId) {
+        await editGatewayChannelMessage(channelId, placeholderId, {
+          content: "No help center articles are available right now. Please try again later.",
+        });
+      } else {
+        await sendGatewayChannelMessage(
+          channelId,
+          "No help center articles are available right now. Please try again later.",
+          messageId,
+        );
+      }
+      return;
+    }
+
+    const answer = await askClaude(question, articles);
+
+    if (placeholderId) {
+      await editGatewayChannelMessage(channelId, placeholderId, {
+        content: "",
+        embeds: [{
+          title: "Ethos Help Center",
+          description: answer,
+          color: 0x2E7BC3, // Ethos blue
+          footer: {
+            text: "AI-generated answer based on Ethos help articles — may not be 100% accurate",
+          },
+          timestamp: new Date().toISOString(),
+        }],
+      });
+    } else {
+      await sendGatewayChannelEmbed(channelId, messageId, {
+        title: "Ethos Help Center",
+        description: answer,
+        color: 0x2E7BC3, // Ethos blue
+        footer: {
+          text: "AI-generated answer based on Ethos help articles — may not be 100% accurate",
+        },
+        timestamp: new Date().toISOString(),
+      });
+    }
+  } catch (error) {
+    console.error("Error handling mention question:", error);
+    const errorMsg = "\u274C Sorry, I ran into an error while answering your question. Please try again or use the `/ask` command.";
+    if (placeholderId) {
+      await editGatewayChannelMessage(channelId, placeholderId, { content: errorMsg });
+    } else {
+      await sendGatewayChannelMessage(channelId, errorMsg, messageId);
+    }
   }
-
-  const answer = await askClaude(question, articles);
-
-  await sendGatewayChannelEmbed(channelId, messageId, {
-    title: "Ethos Help Center",
-    description: answer,
-    color: 0x2E7BC3, // Ethos blue
-    footer: {
-      text: "AI-generated answer based on Ethos help articles — may not be 100% accurate",
-    },
-    timestamp: new Date().toISOString(),
-  });
 }
 
 // ===== GATEWAY CHANNEL MESSAGE SENDERS =====
@@ -2283,7 +2316,7 @@ async function sendGatewayChannelMessage(
   channelId: string,
   content: string,
   replyToMessageId?: string,
-): Promise<void> {
+): Promise<string | null> {
   const url = `https://discord.com/api/v10/channels/${channelId}/messages`;
   const body: any = { content };
   if (replyToMessageId) {
@@ -2297,6 +2330,25 @@ async function sendGatewayChannelMessage(
   if (!response.ok) {
     const text = await response.text();
     console.error(`Failed to send channel message: ${response.status} ${text}`);
+    return null;
+  }
+  const data = await response.json();
+  return data.id ?? null;
+}
+
+async function editGatewayChannelMessage(
+  channelId: string,
+  messageId: string,
+  options: { content?: string; embeds?: any[] },
+): Promise<void> {
+  const url = `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`;
+  const response = await discordApiCall(url, {
+    method: "PATCH",
+    body: JSON.stringify(options),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    console.error(`Failed to edit channel message: ${response.status} ${text}`);
   }
 }
 
