@@ -2135,7 +2135,13 @@ function handleGatewayMessageCreate(message: any) {
   console.log(`📩 Question: "${question}" | ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY ? "set" : "MISSING"} | INTERCOM_ACCESS_TOKEN: ${INTERCOM_ACCESS_TOKEN ? "set" : "MISSING"}`);
 
   // Check for user mention-based Ethos profile lookups
-  const userMentions = mentions.filter((m: any) => m.id !== gatewayBotUserId);
+  // When replying with a question, exclude the replied-to author from mentions
+  // (Discord auto-adds the replied-to user to the mentions array)
+  const replyAuthorId = message.referenced_message?.author?.id;
+  const userMentions = mentions.filter((m: any) =>
+    m.id !== gatewayBotUserId &&
+    !(question && replyAuthorId && m.id === replyAuthorId)
+  );
 
   let ethosTargetUsers: Array<{ id: string; username: string; global_name?: string; avatar?: string }> = [];
 
