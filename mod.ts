@@ -153,10 +153,10 @@ const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
 const INTERCOM_ACCESS_TOKEN = Deno.env.get("INTERCOM_ACCESS_TOKEN");
 
 if (!ANTHROPIC_API_KEY) {
-  console.warn("⚠️ ANTHROPIC_API_KEY not set — /ask command will be unavailable");
+  console.warn("⚠️ ANTHROPIC_API_KEY not set — @mention AI help will be unavailable");
 }
 if (!INTERCOM_ACCESS_TOKEN) {
-  console.warn("⚠️ INTERCOM_ACCESS_TOKEN not set — /ask command will be unavailable");
+  console.warn("⚠️ INTERCOM_ACCESS_TOKEN not set — @mention AI help will be unavailable");
 }
 
 if (!PUBLIC_KEY || !APPLICATION_ID) {
@@ -840,7 +840,7 @@ async function sendRoleChangeWebhook(
         title = "🔒 User Verification";
         description = `User <@${userId}> manually verified their roles`;
         color = 0x127F31; // Green
-        footer = "Manual verification via /ethos_verify command";
+        footer = "Manual verification via @mention";
         break;
       
       case "batch-sync":
@@ -1387,130 +1387,8 @@ async function handleInteraction(
     case InteractionType.ApplicationCommand: {
       const commandName = interaction.data?.name;
 
-      // Handle ethos_verify command (verify user and assign role)
-      if (commandName === "ethos_verify") {
-        // Get the user's ID directly from the interaction
-        const userId = interaction.member?.user?.id;
-        const guildId = interaction.guild_id;
-
-        if (!userId) {
-          return {
-            type: InteractionResponseType.ChannelMessageWithSource,
-            data: {
-              content:
-                "Unable to identify your Discord account. Please try again.",
-              flags: 64, // Ephemeral message (only visible to the user)
-            },
-          };
-        }
-
-        if (!guildId) {
-          return {
-            type: InteractionResponseType.ChannelMessageWithSource,
-            data: {
-              content: "This command can only be used in a server.",
-              flags: 64, // Ephemeral message
-            },
-          };
-        }
-
-        // Immediately respond with "thinking" to prevent timeout
-        // This gives us up to 15 minutes to complete the operation
-        const deferredResponse = {
-          type: InteractionResponseType.DeferredChannelMessageWithSource,
-          data: {
-            flags: 64, // Ephemeral message
-          },
-        };
-
-        // Perform the verification asynchronously and send follow-up
-        (async () => {
-          try {
-            // Clear cache for manual verification to ensure fresh check
-            await clearUserCache(userId);
-
-            // Use the optimized verification logic (always forces sync, bypasses cache)
-            const verifyResult = await verifyUserRoles(guildId, userId);
-
-            let followUpContent: string;
-
-            if (!verifyResult.success) {
-              // Check if it's a profile validation error
-              if (verifyResult.profile && "error" in verifyResult.profile) {
-                followUpContent = verifyResult.profile.error;
-              } else {
-                followUpContent =
-                  "You don't have an Ethos profile OR you haven't connected Discord to your Ethos account yet. Ethos users can connect their Discord account at https://app.ethos.network/profile/settings?tab=social";
-              }
-            } else if (verifyResult.profile && "error" in verifyResult.profile) {
-              // Profile fetch returned an error (no profile or Discord not connected)
-              followUpContent = verifyResult.profile.error + "\n\nEthos users can connect their Discord account at https://app.ethos.network/profile/settings?tab=social";
-            } else if (!verifyResult.profile) {
-              // No profile returned at all
-              followUpContent =
-                "You don't have an Ethos profile OR you haven't connected Discord to your Ethos account yet. Ethos users can connect their Discord account at https://app.ethos.network/profile/settings?tab=social";
-            } else {
-              const profile = verifyResult.profile;
-              const ownsValidator = await checkUserOwnsValidator(userId);
-              const scoreName = getRoleNameForScore(profile.score);
-
-              // Send webhook notification for successful role changes
-              if (verifyResult.changes.length > 0) {
-                await sendRoleChangeWebhook(userId, verifyResult.changes, "user-initiated", {
-                  userScore: profile.score,
-                  profileInfo: `${profile.name || `Discord User ${userId}`} - ${ownsValidator ? 'Has Validator NFT' : 'No Validator NFT'}`,
-                  guildId: guildId,
-                });
-              }
-
-              // Create response message based on changes made
-              followUpContent = "✅ Verification successful! ";
-
-              if (verifyResult.changes.length > 0) {
-                followUpContent += `Role changes: ${
-                  verifyResult.changes.join(", ")
-                }. `;
-              } else {
-                followUpContent += "Your roles were already up to date. ";
-              }
-
-              // Show the appropriate role information
-              if (ownsValidator) {
-                const validatorRoleId = getValidatorRoleIdForScore(profile.score);
-                if (validatorRoleId) {
-                  const validatorRoleName = getRoleNameFromId(validatorRoleId);
-                  followUpContent +=
-                    `You have a ${scoreName} score of ${profile.score} and the ${validatorRoleName} role.`;
-                } else {
-                  // Untrusted users get regular untrusted role even with validator
-                  followUpContent +=
-                    `You have a ${scoreName} score of ${profile.score}. Note: Untrusted users receive the regular Untrusted role even with a validator NFT.`;
-                }
-              } else {
-                followUpContent +=
-                  `You have a ${scoreName} score of ${profile.score}.`;
-              }
-            }
-
-            // Send follow-up message with the result
-            await safeFollowUp(interaction, followUpContent);
-
-          } catch (error) {
-            console.error("Error in async ethos_verify:", error);
-            
-            // Send error follow-up message
-            const errorMessage = "❌ An error occurred while verifying your profile. Please try again later.";
-            try {
-              await safeFollowUp(interaction, errorMessage);
-            } catch (followUpError) {
-              console.error("Error sending follow-up message:", followUpError);
-            }
-          }
-        })();
-
-        return deferredResponse;
-      } // Handle ethos command (Discord profiles)
-      else if (commandName === "ethos") {
+      // Handle ethos command (Discord profiles)
+      if (commandName === "ethos") {
         // With a User type option, Discord will automatically provide the user ID
         const userId = interaction.data.options?.[0].value?.toString();
         if (!userId) {
@@ -1721,198 +1599,6 @@ async function handleInteraction(
                 "❌ An error occurred while fetching the profile. Please try again later.");
             } catch (followUpError) {
               console.error("Error sending follow-up message:", followUpError);
-            }
-          }
-        })();
-
-        return deferredResponse;
-      } // Handle ethos_recalc command (recalculate roles for high-score members)
-      else if (commandName === "ethos_recalc") {
-        const guildId = interaction.guild_id;
-        const userId = interaction.member?.user?.id;
-
-        if (!guildId) {
-          return {
-            type: InteractionResponseType.ChannelMessageWithSource,
-            data: {
-              content: "This command can only be used in a server.",
-              flags: 64, // Ephemeral
-            },
-          };
-        }
-
-        // Check if user has admin permissions (ADMINISTRATOR = 0x8)
-        const permissions = BigInt(interaction.member?.permissions || "0");
-        const isAdmin = (permissions & BigInt(0x8)) !== BigInt(0);
-
-        if (!isAdmin) {
-          return {
-            type: InteractionResponseType.ChannelMessageWithSource,
-            data: {
-              content: "This command requires administrator permissions.",
-              flags: 64, // Ephemeral
-            },
-          };
-        }
-
-        // Immediately respond with "thinking" to prevent timeout
-        const deferredResponse = {
-          type: InteractionResponseType.DeferredChannelMessageWithSource,
-          data: {
-            flags: 64, // Ephemeral - only visible to the admin
-          },
-        };
-
-        // Perform the recalculation asynchronously
-        (async () => {
-          try {
-            console.log(`[RECALC] Starting recalculation triggered by user ${userId}`);
-
-            // Get all members with high score roles (1400+)
-            const highScoreMembers = await getMembersWithHighScoreRoles(guildId);
-
-            if (highScoreMembers.length === 0) {
-              await safeFollowUp(interaction, "No members found with roles for scores 1400+.");
-              return;
-            }
-
-            await safeFollowUp(interaction, `Found ${highScoreMembers.length} members with high score roles. Starting recalculation...`);
-
-            let processedCount = 0;
-            let changedCount = 0;
-            let errorCount = 0;
-            const changes: string[] = [];
-
-            // Process each member
-            for (const memberId of highScoreMembers) {
-              try {
-                // Clear cache to ensure fresh check
-                await clearUserCache(memberId);
-
-                // Sync the user's roles (this will compare expected vs actual and fix mismatches)
-                const result = await syncUserRoles(guildId, memberId, processedCount + 1, highScoreMembers.length, true, false);
-
-                processedCount++;
-
-                if (result.success && result.changes.length > 0) {
-                  changedCount++;
-                  changes.push(`<@${memberId}>: ${result.changes.join(", ")}`);
-
-                  // Send webhook notification for role changes
-                  await sendRoleChangeWebhook(memberId, result.changes, "recalc-command", {
-                    guildId: guildId,
-                    triggeredBy: userId,
-                  });
-                }
-              } catch (error) {
-                console.error(`[RECALC] Error processing member ${memberId}:`, error);
-                errorCount++;
-              }
-
-              // Small delay to avoid rate limiting
-              await new Promise((resolve) => setTimeout(resolve, 100));
-            }
-
-            // Build summary message
-            let summary = `**Recalculation Complete**\n`;
-            summary += `- Processed: ${processedCount}/${highScoreMembers.length} members\n`;
-            summary += `- Role changes: ${changedCount}\n`;
-            summary += `- Errors: ${errorCount}\n`;
-
-            if (changes.length > 0) {
-              summary += `\n**Changes made:**\n`;
-              // Limit to first 10 changes to avoid message length limits
-              const displayChanges = changes.slice(0, 10);
-              summary += displayChanges.join("\n");
-              if (changes.length > 10) {
-                summary += `\n... and ${changes.length - 10} more changes`;
-              }
-            } else {
-              summary += `\nNo role changes were needed - all roles are correct.`;
-            }
-
-            await safeFollowUp(interaction, summary);
-            console.log(`[RECALC] Completed. Processed: ${processedCount}, Changed: ${changedCount}, Errors: ${errorCount}`);
-
-          } catch (error) {
-            console.error("[RECALC] Error in recalculation:", error);
-            await safeFollowUp(interaction, "❌ An error occurred during recalculation. Please try again later.");
-          }
-        })();
-
-        return deferredResponse;
-      } // Handle /ask command (AI Help Center)
-      else if (commandName === "ask") {
-        const question = interaction.data.options?.[0]?.value?.toString();
-        if (!question) {
-          return {
-            type: InteractionResponseType.ChannelMessageWithSource,
-            data: {
-              content: "Please provide a question!",
-              flags: 64, // Ephemeral
-            },
-          };
-        }
-
-        if (!ANTHROPIC_API_KEY || !INTERCOM_ACCESS_TOKEN) {
-          console.error(`/ask command blocked — ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY ? "set" : "MISSING"}, INTERCOM_ACCESS_TOKEN: ${INTERCOM_ACCESS_TOKEN ? "set" : "MISSING"}`);
-          return {
-            type: InteractionResponseType.ChannelMessageWithSource,
-            data: {
-              content: "The /ask command is not configured yet. Please contact an admin.",
-              flags: 64, // Ephemeral
-            },
-          };
-        }
-
-        // Immediately respond with "thinking" to prevent timeout
-        const deferredResponse = {
-          type: InteractionResponseType.DeferredChannelMessageWithSource,
-          data: {
-            flags: 0, // Public message
-          },
-        };
-
-        // Process asynchronously and send follow-up
-        (async () => {
-          try {
-            const articles = await loadArticlesCache();
-
-            if (articles.length === 0) {
-              await sendPublicFollowUpMessage(
-                interaction.id,
-                interaction.token,
-                "No help center articles are available right now. Please try again later.",
-              );
-              return;
-            }
-
-            const answer = await askClaude(question, articles);
-
-            await sendPublicFollowUpEmbedMessage(
-              interaction.id,
-              interaction.token,
-              {
-                title: "Ethos Help Center",
-                description: answer,
-                color: 0x2E7BC3, // Ethos blue
-                footer: {
-                  text: "AI-generated answer based on Ethos help articles — may not be 100% accurate",
-                },
-                timestamp: new Date().toISOString(),
-              },
-            );
-          } catch (error) {
-            console.error("Error in async /ask command:", error);
-
-            try {
-              await sendPublicFollowUpMessage(
-                interaction.id,
-                interaction.token,
-                "❌ An error occurred while answering your question. Please try again later.",
-              );
-            } catch (followUpError) {
-              console.error("Error sending /ask follow-up error:", followUpError);
             }
           }
         })();
@@ -2223,10 +1909,56 @@ function handleGatewayMessageCreate(message: any) {
 
   console.log(`📩 Question: "${question}" | ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY ? "set" : "MISSING"} | INTERCOM_ACCESS_TOKEN: ${INTERCOM_ACCESS_TOKEN ? "set" : "MISSING"}`);
 
+  // Check for "recalc" trigger
+  if (question.toLowerCase() === "recalc") {
+    const guildId = message.guild_id;
+    if (!guildId) {
+      sendGatewayChannelMessage(
+        message.channel_id,
+        "This command can only be used in a server.",
+        message.id,
+      ).catch((error) => console.error("Error sending recalc guild error:", error));
+      return;
+    }
+
+    const RECALC_ALLOWED_USER = "271050816222265364";
+    if (message.author.id !== RECALC_ALLOWED_USER) {
+      sendGatewayChannelMessage(
+        message.channel_id,
+        "You don't have permission to use this command.",
+        message.id,
+      ).catch((error) => console.error("Error sending recalc permission denied:", error));
+      return;
+    }
+
+    handleMentionRecalc(message.channel_id, message.id, guildId, message.author.id).catch((error) => {
+      console.error("Unexpected error in handleMentionRecalc:", error);
+    });
+    return;
+  }
+
+  // Check for "verify" trigger
+  if (question.toLowerCase() === "verify") {
+    const guildId = message.guild_id;
+    if (!guildId) {
+      sendGatewayChannelMessage(
+        message.channel_id,
+        "This command can only be used in a server.",
+        message.id,
+      ).catch((error) => console.error("Error sending verify guild error:", error));
+      return;
+    }
+
+    handleMentionVerify(message.channel_id, message.id, guildId, message.author.id).catch((error) => {
+      console.error("Unexpected error in handleMentionVerify:", error);
+    });
+    return;
+  }
+
   if (!question) {
     sendGatewayChannelMessage(
       message.channel_id,
-      "👋 Hi! Ask me anything about Ethos Network — just @mention me with your question.\n\nExample: `@EthosBot how do I verify my account?`\n\nYou can also use the `/ask` slash command.",
+      "👋 Hi! Ask me anything about Ethos Network — just @mention me with your question.\n\nExample: `@EthosBot how do I verify my account?`",
       message.id,
     ).catch((error) => console.error("Error sending mention hint:", error));
     return;
@@ -2235,7 +1967,7 @@ function handleGatewayMessageCreate(message: any) {
   if (!ANTHROPIC_API_KEY || !INTERCOM_ACCESS_TOKEN) {
     sendGatewayChannelMessage(
       message.channel_id,
-      "The AI help center is not configured yet. Please use the `/ask` slash command or contact an admin.",
+      "The AI help center is not configured yet. Please contact an admin.",
       message.id,
     ).catch((error) => console.error("Error sending config warning:", error));
     return;
@@ -2301,7 +2033,183 @@ async function handleMentionQuestion(channelId: string, messageId: string, quest
     }
   } catch (error) {
     console.error("Error handling mention question:", error);
-    const errorMsg = "\u274C Sorry, I ran into an error while answering your question. Please try again or use the `/ask` command.";
+    const errorMsg = "\u274C Sorry, I ran into an error while answering your question. Please try again later.";
+    if (placeholderId) {
+      await editGatewayChannelMessage(channelId, placeholderId, { content: errorMsg });
+    } else {
+      await sendGatewayChannelMessage(channelId, errorMsg, messageId);
+    }
+  }
+}
+
+async function handleMentionRecalc(channelId: string, messageId: string, guildId: string, userId: string): Promise<void> {
+  const placeholderId = await sendGatewayChannelMessage(
+    channelId,
+    "⏳ Recalculating roles...",
+    messageId,
+  );
+
+  try {
+    console.log(`[RECALC] Starting recalculation triggered by user ${userId}`);
+
+    const highScoreMembers = await getMembersWithHighScoreRoles(guildId);
+
+    if (highScoreMembers.length === 0) {
+      const msg = "No members found with roles for scores 1400+.";
+      if (placeholderId) {
+        await editGatewayChannelMessage(channelId, placeholderId, { content: msg });
+      } else {
+        await sendGatewayChannelMessage(channelId, msg, messageId);
+      }
+      return;
+    }
+
+    if (placeholderId) {
+      await editGatewayChannelMessage(channelId, placeholderId, {
+        content: `⏳ Found ${highScoreMembers.length} members with high score roles. Recalculating...`,
+      });
+    }
+
+    let processedCount = 0;
+    let changedCount = 0;
+    let errorCount = 0;
+    const changes: string[] = [];
+
+    for (const memberId of highScoreMembers) {
+      try {
+        await clearUserCache(memberId);
+        const result = await syncUserRoles(guildId, memberId, processedCount + 1, highScoreMembers.length, true, false);
+        processedCount++;
+
+        if (result.success && result.changes.length > 0) {
+          changedCount++;
+          changes.push(`<@${memberId}>: ${result.changes.join(", ")}`);
+          await sendRoleChangeWebhook(memberId, result.changes, "recalc-command", {
+            guildId: guildId,
+            triggeredBy: userId,
+          });
+        }
+      } catch (error) {
+        console.error(`[RECALC] Error processing member ${memberId}:`, error);
+        errorCount++;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    let summary = `**Recalculation Complete**\n`;
+    summary += `- Processed: ${processedCount}/${highScoreMembers.length} members\n`;
+    summary += `- Role changes: ${changedCount}\n`;
+    summary += `- Errors: ${errorCount}\n`;
+
+    if (changes.length > 0) {
+      summary += `\n**Changes made:**\n`;
+      const displayChanges = changes.slice(0, 10);
+      summary += displayChanges.join("\n");
+      if (changes.length > 10) {
+        summary += `\n... and ${changes.length - 10} more changes`;
+      }
+    } else {
+      summary += `\nNo role changes were needed - all roles are correct.`;
+    }
+
+    if (placeholderId) {
+      await editGatewayChannelMessage(channelId, placeholderId, { content: summary });
+    } else {
+      await sendGatewayChannelMessage(channelId, summary, messageId);
+    }
+    console.log(`[RECALC] Completed. Processed: ${processedCount}, Changed: ${changedCount}, Errors: ${errorCount}`);
+  } catch (error) {
+    console.error("[RECALC] Error in recalculation:", error);
+    const errorMsg = "❌ An error occurred during recalculation. Please try again later.";
+    if (placeholderId) {
+      await editGatewayChannelMessage(channelId, placeholderId, { content: errorMsg });
+    } else {
+      await sendGatewayChannelMessage(channelId, errorMsg, messageId);
+    }
+  }
+}
+
+async function handleMentionVerify(channelId: string, messageId: string, guildId: string, userId: string): Promise<void> {
+  const placeholderId = await sendGatewayChannelMessage(
+    channelId,
+    "🔍 Verifying your Ethos profile...",
+    messageId,
+  );
+
+  try {
+    // Clear cache for manual verification to ensure fresh check
+    await clearUserCache(userId);
+
+    // Use the optimized verification logic (always forces sync, bypasses cache)
+    const verifyResult = await verifyUserRoles(guildId, userId);
+
+    let resultContent: string;
+
+    if (!verifyResult.success) {
+      // Check if it's a profile validation error
+      if (verifyResult.profile && "error" in verifyResult.profile) {
+        resultContent = verifyResult.profile.error;
+      } else {
+        resultContent =
+          "You don't have an Ethos profile OR you haven't connected Discord to your Ethos account yet. Ethos users can connect their Discord account at https://app.ethos.network/profile/settings?tab=social";
+      }
+    } else if (verifyResult.profile && "error" in verifyResult.profile) {
+      // Profile fetch returned an error (no profile or Discord not connected)
+      resultContent = verifyResult.profile.error + "\n\nEthos users can connect their Discord account at https://app.ethos.network/profile/settings?tab=social";
+    } else if (!verifyResult.profile) {
+      // No profile returned at all
+      resultContent =
+        "You don't have an Ethos profile OR you haven't connected Discord to your Ethos account yet. Ethos users can connect their Discord account at https://app.ethos.network/profile/settings?tab=social";
+    } else {
+      const profile = verifyResult.profile;
+      const ownsValidator = await checkUserOwnsValidator(userId);
+      const scoreName = getRoleNameForScore(profile.score);
+
+      // Send webhook notification for successful role changes
+      if (verifyResult.changes.length > 0) {
+        await sendRoleChangeWebhook(userId, verifyResult.changes, "user-initiated", {
+          userScore: profile.score,
+          profileInfo: `${profile.name || `Discord User ${userId}`} - ${ownsValidator ? 'Has Validator NFT' : 'No Validator NFT'}`,
+          guildId: guildId,
+        });
+      }
+
+      // Create response message based on changes made
+      resultContent = "✅ Verification successful! ";
+
+      if (verifyResult.changes.length > 0) {
+        resultContent += `Role changes: ${verifyResult.changes.join(", ")}. `;
+      } else {
+        resultContent += "Your roles were already up to date. ";
+      }
+
+      // Show the appropriate role information
+      if (ownsValidator) {
+        const validatorRoleId = getValidatorRoleIdForScore(profile.score);
+        if (validatorRoleId) {
+          const validatorRoleName = getRoleNameFromId(validatorRoleId);
+          resultContent +=
+            `You have a ${scoreName} score of ${profile.score} and the ${validatorRoleName} role.`;
+        } else {
+          // Untrusted users get regular untrusted role even with validator
+          resultContent +=
+            `You have a ${scoreName} score of ${profile.score}. Note: Untrusted users receive the regular Untrusted role even with a validator NFT.`;
+        }
+      } else {
+        resultContent +=
+          `You have a ${scoreName} score of ${profile.score}.`;
+      }
+    }
+
+    if (placeholderId) {
+      await editGatewayChannelMessage(channelId, placeholderId, { content: resultContent });
+    } else {
+      await sendGatewayChannelMessage(channelId, resultContent, messageId);
+    }
+  } catch (error) {
+    console.error("Error in handleMentionVerify:", error);
+    const errorMsg = "❌ An error occurred while verifying your profile. Please try again later.";
     if (placeholderId) {
       await editGatewayChannelMessage(channelId, placeholderId, { content: errorMsg });
     } else {
@@ -2350,6 +2258,22 @@ async function editGatewayChannelMessage(
     const text = await response.text();
     console.error(`Failed to edit channel message: ${response.status} ${text}`);
   }
+}
+
+async function isGuildAdmin(guildId: string, memberRoles: string[]): Promise<boolean> {
+  const url = `https://discord.com/api/v10/guilds/${guildId}/roles`;
+  const response = await discordApiCall(url, { method: "GET" });
+  if (!response.ok) {
+    console.error(`Failed to fetch guild roles: ${response.status}`);
+    return false;
+  }
+  const roles: any[] = await response.json();
+  for (const role of roles) {
+    if (memberRoles.includes(role.id) && (BigInt(role.permissions) & BigInt(0x8)) !== BigInt(0)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 async function sendGatewayChannelEmbed(
