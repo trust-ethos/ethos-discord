@@ -145,11 +145,224 @@ const ETHOS_VALIDATOR_NEUTRAL = "1377685710026571876"; // Score 1200-1399 + vali
 const ETHOS_VALIDATOR_QUESTIONABLE = "1377688531522158632"; // Score 800-1199 + validator
 // No untrusted validator role - untrusted users get regular untrusted role even if they have validator
 
+// AI Help Center env vars
+const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
+const INTERCOM_ACCESS_TOKEN = Deno.env.get("INTERCOM_ACCESS_TOKEN");
+
+if (!ANTHROPIC_API_KEY) {
+  console.warn("⚠️ ANTHROPIC_API_KEY not set — /ask command will be unavailable");
+}
+if (!INTERCOM_ACCESS_TOKEN) {
+  console.warn("⚠️ INTERCOM_ACCESS_TOKEN not set — /ask command will be unavailable");
+}
+
 if (!PUBLIC_KEY || !APPLICATION_ID) {
   console.error("Environment variables check failed:");
   console.error("DISCORD_PUBLIC_KEY:", PUBLIC_KEY ? "set" : "missing");
   console.error("DISCORD_APPLICATION_ID:", APPLICATION_ID ? "set" : "missing");
   // Don't throw, just log the error
+}
+
+// ===== HELP CENTER ARTICLE CACHING =====
+interface CachedArticle {
+  id: string;
+  title: string;
+  description: string;
+  body: string; // HTML-stripped plain text
+  url: string;
+  updatedAt: number;
+}
+
+const ARTICLES_CACHE_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours
+const ARTICLES_KV_KEY = ["help_center_articles"];
+let articlesCache: CachedArticle[] | null = null;
+let articlesCacheTimestamp = 0;
+
+// Strip HTML tags and decode entities to plain text
+function stripHtml(html: string): string {
+  if (!html) return "";
+  let text = html;
+  // Replace <br>, <br/>, <br /> with newlines
+  text = text.replace(/<br\s*\/?>/gi, "\n");
+  // Replace </p>, </div>, </li>, </h1-6> with newlines
+  text = text.replace(/<\/(p|div|li|h[1-6]|tr|blockquote)>/gi, "\n");
+  // Replace <li> with "- "
+  text = text.replace(/<li[^>]*>/gi, "- ");
+  // Remove all remaining HTML tags
+  text = text.replace(/<[^>]+>/g, "");
+  // Decode common HTML entities
+  text = text.replace(/&amp;/g, "&");
+  text = text.replace(/&lt;/g, "<");
+  text = text.replace(/&gt;/g, ">");
+  text = text.replace(/&quot;/g, '"');
+  text = text.replace(/&#39;/g, "'");
+  text = text.replace(/&nbsp;/g, " ");
+  // Collapse multiple newlines into at most two
+  text = text.replace(/\n{3,}/g, "\n\n");
+  return text.trim();
+}
+
+// Fetch all published articles from Intercom with pagination
+async function fetchIntercomArticles(): Promise<CachedArticle[]> {
+  if (!INTERCOM_ACCESS_TOKEN) {
+    throw new Error("INTERCOM_ACCESS_TOKEN not configured");
+  }
+
+  const articles: CachedArticle[] = [];
+  let page = 1;
+  let hasMore = true;
+
+  while (hasMore) {
+    const response = await fetch(
+      `https://api.intercom.io/articles?page=${page}&per_page=50`,
+      {
+        headers: {
+          "Authorization": `Bearer ${INTERCOM_ACCESS_TOKEN}`,
+          "Accept": "application/json",
+        },
+      },
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Intercom API error ${response.status}: ${errorText}`);
+    }
+
+    const data = await response.json();
+    const pageArticles = data.data || [];
+
+    for (const article of pageArticles) {
+      if (article.state !== "published") continue;
+
+      articles.push({
+        id: String(article.id),
+        title: article.title || "",
+        description: article.description || "",
+        body: stripHtml(article.body || ""),
+        url: article.url || "",
+        updatedAt: article.updated_at || 0,
+      });
+    }
+
+    // Check for more pages
+    const totalPages = data.pages?.total_pages || 1;
+    if (page >= totalPages) {
+      hasMore = false;
+    } else {
+      page++;
+    }
+  }
+
+  console.log(`📚 Fetched ${articles.length} published articles from Intercom`);
+  return articles;
+}
+
+// Load articles from in-memory cache, KV, or Intercom (in that order)
+async function loadArticlesCache(): Promise<CachedArticle[]> {
+  const now = Date.now();
+
+  // Check in-memory cache first
+  if (articlesCache && (now - articlesCacheTimestamp) < ARTICLES_CACHE_DURATION_MS) {
+    return articlesCache;
+  }
+
+  // Check KV cache
+  if (kv) {
+    try {
+      const kvResult = await kv.get(ARTICLES_KV_KEY);
+      if (kvResult.value) {
+        const stored = kvResult.value as { articles: CachedArticle[]; timestamp: number };
+        if ((now - stored.timestamp) < ARTICLES_CACHE_DURATION_MS) {
+          articlesCache = stored.articles;
+          articlesCacheTimestamp = stored.timestamp;
+          console.log(`📚 Loaded ${stored.articles.length} articles from KV cache`);
+          return articlesCache;
+        }
+      }
+    } catch (error) {
+      console.warn("⚠️ Error reading articles from KV:", error);
+    }
+  }
+
+  // Fetch fresh from Intercom
+  const articles = await fetchIntercomArticles();
+  articlesCache = articles;
+  articlesCacheTimestamp = now;
+
+  // Persist to KV
+  if (kv) {
+    try {
+      await kv.set(ARTICLES_KV_KEY, { articles, timestamp: now });
+    } catch (error) {
+      console.warn("⚠️ Error saving articles to KV:", error);
+    }
+  }
+
+  return articles;
+}
+
+// Force-refresh articles from Intercom, updating both KV and in-memory cache
+async function refreshArticlesCache(): Promise<CachedArticle[]> {
+  const articles = await fetchIntercomArticles();
+  const now = Date.now();
+  articlesCache = articles;
+  articlesCacheTimestamp = now;
+
+  if (kv) {
+    try {
+      await kv.set(ARTICLES_KV_KEY, { articles, timestamp: now });
+    } catch (error) {
+      console.warn("⚠️ Error saving articles to KV:", error);
+    }
+  }
+
+  return articles;
+}
+
+// Call Claude API with help center articles as context
+async function askClaude(question: string, articles: CachedArticle[]): Promise<string> {
+  if (!ANTHROPIC_API_KEY) {
+    throw new Error("ANTHROPIC_API_KEY not configured");
+  }
+
+  // Build article context
+  const articleContext = articles.map((a) =>
+    `## ${a.title}\n${a.description ? a.description + "\n" : ""}${a.body}\n${a.url ? `URL: ${a.url}` : ""}`
+  ).join("\n\n---\n\n");
+
+  const systemPrompt = `You are the Ethos Network help center assistant. Answer the user's question using ONLY the help center articles provided below. Be concise and helpful. If the answer is not covered in the articles, say so honestly.
+
+When relevant, include links to specific articles using their URLs.
+
+Keep your response under 1800 characters so it fits in a Discord message.
+
+---
+HELP CENTER ARTICLES:
+${articleContext}`;
+
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-5-20250514",
+      max_tokens: 1024,
+      system: systemPrompt,
+      messages: [{ role: "user", content: question }],
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Claude API error ${response.status}: ${errorText}`);
+  }
+
+  const data = await response.json();
+  const textBlock = data.content?.find((b: any) => b.type === "text");
+  return textBlock?.text || "I wasn't able to generate an answer. Please try again.";
 }
 
 // Helper function to check if a handle is likely a Discord handle
@@ -1598,6 +1811,82 @@ async function handleInteraction(
         })();
 
         return deferredResponse;
+      } // Handle /ask command (AI Help Center)
+      else if (commandName === "ask") {
+        const question = interaction.data.options?.[0]?.value?.toString();
+        if (!question) {
+          return {
+            type: InteractionResponseType.ChannelMessageWithSource,
+            data: {
+              content: "Please provide a question!",
+              flags: 64, // Ephemeral
+            },
+          };
+        }
+
+        if (!ANTHROPIC_API_KEY || !INTERCOM_ACCESS_TOKEN) {
+          return {
+            type: InteractionResponseType.ChannelMessageWithSource,
+            data: {
+              content: "The /ask command is not configured yet. Please contact an admin.",
+              flags: 64, // Ephemeral
+            },
+          };
+        }
+
+        // Immediately respond with "thinking" to prevent timeout
+        const deferredResponse = {
+          type: InteractionResponseType.DeferredChannelMessageWithSource,
+          data: {
+            flags: 0, // Public message
+          },
+        };
+
+        // Process asynchronously and send follow-up
+        (async () => {
+          try {
+            const articles = await loadArticlesCache();
+
+            if (articles.length === 0) {
+              await sendPublicFollowUpMessage(
+                interaction.id,
+                interaction.token,
+                "No help center articles are available right now. Please try again later.",
+              );
+              return;
+            }
+
+            const answer = await askClaude(question, articles);
+
+            await sendPublicFollowUpEmbedMessage(
+              interaction.id,
+              interaction.token,
+              {
+                title: "Ethos Help Center",
+                description: answer,
+                color: 0x2E7BC3, // Ethos blue
+                footer: {
+                  text: "AI-generated answer based on Ethos help articles — may not be 100% accurate",
+                },
+                timestamp: new Date().toISOString(),
+              },
+            );
+          } catch (error) {
+            console.error("Error in async /ask command:", error);
+
+            try {
+              await sendPublicFollowUpMessage(
+                interaction.id,
+                interaction.token,
+                "❌ An error occurred while answering your question. Please try again later.",
+              );
+            } catch (followUpError) {
+              console.error("Error sending /ask follow-up error:", followUpError);
+            }
+          }
+        })();
+
+        return deferredResponse;
       } // Unknown command
       else {
         return {
@@ -2185,6 +2474,42 @@ serve(async (req) => {
           status: 500,
           headers: { "Content-Type": "application/json" },
         },
+      );
+    }
+  }
+
+  // Refresh help center articles cache
+  if (url.pathname === "/refresh-articles" && req.method === "POST") {
+    try {
+      const authHeader = req.headers.get("Authorization");
+      const expectedAuth = Deno.env.get("SYNC_AUTH_TOKEN");
+
+      if (expectedAuth && authHeader !== `Bearer ${expectedAuth}`) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+
+      if (!INTERCOM_ACCESS_TOKEN) {
+        return new Response(
+          JSON.stringify({ success: false, error: "INTERCOM_ACCESS_TOKEN not configured" }),
+          { status: 500, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      const articles = await refreshArticlesCache();
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          message: `Refreshed ${articles.length} articles from Intercom`,
+          articleCount: articles.length,
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      );
+    } catch (error) {
+      console.error("Error refreshing articles:", error);
+      return new Response(
+        JSON.stringify({ success: false, error: "Failed to refresh articles" }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
       );
     }
   }
