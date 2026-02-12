@@ -7,11 +7,8 @@ RUN apt-get update && apt-get install -y curl \
     && npm install -g @trust-ethos/cli \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Verify ethos CLI is installed and accessible
-RUN which ethos && ethos --version
-
-# Ensure npm global bin dir is in PATH for Deno subprocess
-ENV PATH="/usr/local/bin:/usr/bin:/usr/lib/node_modules/.bin:${PATH}"
+# Verify ethos CLI entry point exists
+RUN node /usr/lib/node_modules/@trust-ethos/cli/bin/run.js --version
 
 # Set working directory
 WORKDIR /app

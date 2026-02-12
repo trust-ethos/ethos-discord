@@ -424,29 +424,31 @@ const ETHOS_CLI_TOOLS = [
   },
 ];
 
-// Find the ethos CLI binary path
-function findEthosCliPath(): string {
-  // Try common paths where npm installs global binaries
-  for (const path of ["/usr/bin/ethos", "/usr/local/bin/ethos"]) {
-    try {
-      Deno.statSync(path);
-      return path;
-    } catch {
-      // Not found, try next
-    }
+// Find the ethos CLI — returns [command, prefixArgs]
+// Uses node + absolute path to bypass PATH resolution issues in containers
+function findEthosCliCommand(): [string, string[]] {
+  // In Docker: run the CLI entry point directly via node
+  const globalRoot = "/usr/lib/node_modules";
+  const cliEntry = `${globalRoot}/@trust-ethos/cli/bin/run.js`;
+  try {
+    Deno.statSync(cliEntry);
+    console.log(`🔧 Ethos CLI: using node ${cliEntry}`);
+    return ["node", [cliEntry]];
+  } catch {
+    // Not in Docker — use bare 'ethos' from PATH (local dev)
   }
-  // Fall back to bare name (relies on PATH)
-  return "ethos";
+
+  console.log("🔧 Ethos CLI: using 'ethos' from PATH");
+  return ["ethos", []];
 }
 
-const ETHOS_CLI_PATH = findEthosCliPath();
-console.log(`🔧 Ethos CLI path resolved to: ${ETHOS_CLI_PATH}`);
+const [ETHOS_CMD, ETHOS_CMD_PREFIX] = findEthosCliCommand();
 
 // Run an ethos CLI command with timeout and JSON parsing
 async function runEthosCli(args: string[]): Promise<{ success: boolean; data?: any; error?: string }> {
   try {
-    const command = new Deno.Command(ETHOS_CLI_PATH, {
-      args: [...args, "--json"],
+    const command = new Deno.Command(ETHOS_CMD, {
+      args: [...ETHOS_CMD_PREFIX, ...args, "--json"],
       stdout: "piped",
       stderr: "piped",
     });
