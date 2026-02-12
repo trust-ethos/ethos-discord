@@ -502,6 +502,13 @@ async function executeEthosTool(toolName: string, toolInput: Record<string, stri
   }
 
   const result = await runEthosCli(args);
+
+  if (!result.success) {
+    console.error(`❌ CLI tool ${toolName} failed:`, result.error);
+  } else {
+    console.log(`✅ CLI tool ${toolName} succeeded`);
+  }
+
   let output = JSON.stringify(result);
 
   if (output.length > MAX_OUTPUT_CHARS) {
