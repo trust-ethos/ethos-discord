@@ -110,6 +110,9 @@ async function getCacheStats(): Promise<
 const PUBLIC_KEY = Deno.env.get("DISCORD_PUBLIC_KEY");
 const APPLICATION_ID = Deno.env.get("DISCORD_APPLICATION_ID");
 
+// Discord bot token (used by discordApiCall and Gateway WebSocket)
+const DISCORD_TOKEN = Deno.env.get("DISCORD_TOKEN");
+
 // Discord webhook URL for role change notifications
 const WEBHOOK_URL = Deno.env.get("DISCORD_WEBHOOK_URL");
 // Hardcoded role IDs
@@ -472,8 +475,7 @@ async function discordApiCall(
   url: string,
   options: RequestInit,
 ): Promise<Response> {
-  const DISCORD_TOKEN_VAL = Deno.env.get("DISCORD_TOKEN");
-  if (!DISCORD_TOKEN_VAL) {
+  if (!DISCORD_TOKEN) {
     throw new Error("Missing Discord token");
   }
 
@@ -509,7 +511,7 @@ async function discordApiCall(
 
   // Set up headers
   const headers = {
-    "Authorization": `Bot ${DISCORD_TOKEN_VAL}`,
+    "Authorization": `Bot ${DISCORD_TOKEN}`,
     "Content-Type": "application/json",
     ...(options.headers || {}),
   };
@@ -1936,6 +1938,355 @@ function getScoreColor(score: number): number {
   return 0xB72B38; // Untrusted - Red
 }
 
+// ===== DISCORD GATEWAY WEBSOCKET =====
+// Allows the bot to receive MESSAGE_CREATE events for @mention support.
+
+const GatewayOp = {
+  DISPATCH: 0,
+  HEARTBEAT: 1,
+  IDENTIFY: 2,
+  RESUME: 6,
+  RECONNECT: 7,
+  INVALID_SESSION: 9,
+  HELLO: 10,
+  HEARTBEAT_ACK: 11,
+} as const;
+
+// Intents: GUILDS (1<<0) | GUILD_MESSAGES (1<<9) | MESSAGE_CONTENT (1<<15)
+const GATEWAY_INTENTS = (1 << 0) | (1 << 9) | (1 << 15); // 33281
+
+// Mutable Gateway state
+let gatewayWs: WebSocket | null = null;
+let gatewaySessionId: string | null = null;
+let gatewayResumeUrl: string | null = null;
+let gatewaySequence: number | null = null;
+let gatewayHeartbeatTimer: number | null = null;
+let gatewayHeartbeatAcked = true;
+let gatewayBotUserId: string | null = null;
+let gatewayReconnectAttempts = 0;
+
+// Non-recoverable close codes — do not reconnect
+const GATEWAY_FATAL_CODES = new Set([4004, 4010, 4011, 4012, 4013, 4014]);
+
+async function fetchGatewayUrl(): Promise<string> {
+  const response = await discordApiCall(
+    "https://discord.com/api/v10/gateway/bot",
+    { method: "GET" },
+  );
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Failed to fetch Gateway URL: ${response.status} ${text}`);
+  }
+  const data = await response.json();
+  return `${data.url}?v=10&encoding=json`;
+}
+
+async function connectGateway(): Promise<void> {
+  if (!DISCORD_TOKEN) {
+    console.warn("⚠️ DISCORD_TOKEN not set — Gateway WebSocket disabled (no @mention support)");
+    return;
+  }
+
+  try {
+    const url = gatewayResumeUrl ?? await fetchGatewayUrl();
+    console.log(`🔌 Connecting to Discord Gateway: ${url}`);
+
+    const ws = new WebSocket(url);
+    gatewayWs = ws;
+
+    ws.onopen = () => {
+      console.log("✅ Gateway WebSocket connected");
+      gatewayReconnectAttempts = 0;
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data as string);
+        handleGatewayMessage(payload);
+      } catch (error) {
+        console.error("❌ Failed to parse Gateway message:", error);
+      }
+    };
+
+    ws.onerror = (event) => {
+      console.error("❌ Gateway WebSocket error:", event);
+    };
+
+    ws.onclose = (event) => {
+      clearGatewayHeartbeat();
+      gatewayWs = null;
+
+      console.warn(`🔌 Gateway closed: code=${event.code} reason="${event.reason}"`);
+
+      if (GATEWAY_FATAL_CODES.has(event.code)) {
+        let hint = "";
+        if (event.code === 4004) hint = " (invalid token)";
+        if (event.code === 4014) hint = " — enable MESSAGE_CONTENT intent in Discord Developer Portal";
+        console.error(`🚫 Fatal Gateway close code ${event.code}${hint}. Not reconnecting.`);
+        return;
+      }
+
+      // Invalidate session on certain codes so we don't try to Resume
+      if (event.code === 4007 || event.code === 4009) {
+        gatewaySessionId = null;
+        gatewaySequence = null;
+      }
+
+      scheduleGatewayReconnect();
+    };
+  } catch (error) {
+    console.error("❌ Gateway connection error:", error);
+    scheduleGatewayReconnect();
+  }
+}
+
+function handleGatewayMessage(payload: { op: number; d: any; s: number | null; t: string | null }) {
+  // Track sequence for heartbeats and Resume
+  if (payload.s !== null) {
+    gatewaySequence = payload.s;
+  }
+
+  switch (payload.op) {
+    case GatewayOp.HELLO:
+      handleGatewayHello(payload.d);
+      break;
+    case GatewayOp.HEARTBEAT_ACK:
+      gatewayHeartbeatAcked = true;
+      break;
+    case GatewayOp.HEARTBEAT:
+      // Server requested an immediate heartbeat
+      sendGatewayHeartbeat();
+      break;
+    case GatewayOp.RECONNECT:
+      console.log("🔄 Gateway requested reconnect");
+      gatewayWs?.close(4000, "Reconnect requested");
+      break;
+    case GatewayOp.INVALID_SESSION:
+      console.warn("⚠️ Invalid session, resumable:", payload.d);
+      if (!payload.d) {
+        // Not resumable — clear session and reconnect fresh
+        gatewaySessionId = null;
+        gatewaySequence = null;
+        gatewayResumeUrl = null;
+      }
+      setTimeout(() => {
+        gatewayWs?.close(4000, "Invalid session");
+      }, 1000 + Math.random() * 4000);
+      break;
+    case GatewayOp.DISPATCH:
+      handleGatewayDispatch(payload.t!, payload.d);
+      break;
+  }
+}
+
+function handleGatewayHello(d: { heartbeat_interval: number }) {
+  const intervalMs = d.heartbeat_interval;
+  console.log(`💓 Gateway heartbeat interval: ${intervalMs}ms`);
+
+  // Start heartbeat with initial jitter
+  const jitter = Math.random() * intervalMs;
+  setTimeout(() => {
+    sendGatewayHeartbeat();
+    startGatewayHeartbeat(intervalMs);
+  }, jitter);
+
+  // Send Identify or Resume
+  if (gatewaySessionId && gatewaySequence !== null) {
+    console.log("🔄 Resuming Gateway session:", gatewaySessionId);
+    sendGatewayPayload(GatewayOp.RESUME, {
+      token: DISCORD_TOKEN,
+      session_id: gatewaySessionId,
+      seq: gatewaySequence,
+    });
+  } else {
+    console.log("🆔 Sending Gateway Identify");
+    sendGatewayPayload(GatewayOp.IDENTIFY, {
+      token: DISCORD_TOKEN,
+      intents: GATEWAY_INTENTS,
+      properties: {
+        os: "linux",
+        browser: "ethos-bot",
+        device: "ethos-bot",
+      },
+    });
+  }
+}
+
+function startGatewayHeartbeat(intervalMs: number) {
+  clearGatewayHeartbeat();
+  gatewayHeartbeatTimer = setInterval(() => {
+    if (!gatewayHeartbeatAcked) {
+      console.warn("💔 Gateway heartbeat not ACKed — zombie connection, closing");
+      gatewayWs?.close(4000, "Heartbeat timeout");
+      return;
+    }
+    sendGatewayHeartbeat();
+  }, intervalMs) as unknown as number;
+}
+
+function clearGatewayHeartbeat() {
+  if (gatewayHeartbeatTimer !== null) {
+    clearInterval(gatewayHeartbeatTimer);
+    gatewayHeartbeatTimer = null;
+  }
+}
+
+function sendGatewayHeartbeat() {
+  gatewayHeartbeatAcked = false;
+  sendGatewayPayload(GatewayOp.HEARTBEAT, gatewaySequence);
+}
+
+function sendGatewayPayload(op: number, d: unknown) {
+  if (gatewayWs && gatewayWs.readyState === WebSocket.OPEN) {
+    gatewayWs.send(JSON.stringify({ op, d }));
+  }
+}
+
+function handleGatewayDispatch(eventName: string, data: any) {
+  switch (eventName) {
+    case "READY":
+      gatewaySessionId = data.session_id;
+      gatewayResumeUrl = data.resume_gateway_url
+        ? `${data.resume_gateway_url}?v=10&encoding=json`
+        : null;
+      gatewayBotUserId = data.user?.id ?? null;
+      console.log(`✅ Gateway READY — bot user ID: ${gatewayBotUserId}, session: ${gatewaySessionId}`);
+      break;
+    case "RESUMED":
+      console.log("✅ Gateway session resumed");
+      break;
+    case "MESSAGE_CREATE":
+      handleGatewayMessageCreate(data);
+      break;
+  }
+}
+
+function scheduleGatewayReconnect() {
+  gatewayReconnectAttempts++;
+  const baseDelay = Math.min(1000 * Math.pow(2, gatewayReconnectAttempts - 1), 60000);
+  const jitter = baseDelay * 0.25 * Math.random();
+  const delay = baseDelay + jitter;
+  console.log(`🔄 Gateway reconnect attempt #${gatewayReconnectAttempts} in ${Math.round(delay)}ms`);
+  setTimeout(() => {
+    connectGateway().catch((error) => {
+      console.error("❌ Gateway reconnect failed:", error);
+    });
+  }, delay);
+}
+
+// ===== @MENTION HANDLER =====
+
+function handleGatewayMessageCreate(message: any) {
+  // Ignore messages from bots
+  if (message.author?.bot) return;
+
+  // Check if the bot is mentioned
+  if (!gatewayBotUserId) return;
+  const mentions: any[] = message.mentions ?? [];
+  const isMentioned = mentions.some((m: any) => m.id === gatewayBotUserId);
+  if (!isMentioned) return;
+
+  // Strip the bot mention(s) to extract the question
+  const mentionPattern = new RegExp(`<@!?${gatewayBotUserId}>`, "g");
+  const question = message.content.replace(mentionPattern, "").trim();
+
+  if (!question) {
+    sendGatewayChannelMessage(
+      message.channel_id,
+      "👋 Hi! Ask me anything about Ethos Network — just @mention me with your question.\n\nExample: `@EthosBot how do I verify my account?`\n\nYou can also use the `/ask` slash command.",
+      message.id,
+    ).catch((error) => console.error("Error sending mention hint:", error));
+    return;
+  }
+
+  if (!ANTHROPIC_API_KEY || !INTERCOM_ACCESS_TOKEN) {
+    sendGatewayChannelMessage(
+      message.channel_id,
+      "The AI help center is not configured yet. Please use the `/ask` slash command or contact an admin.",
+      message.id,
+    ).catch((error) => console.error("Error sending config warning:", error));
+    return;
+  }
+
+  // Process the question asynchronously
+  handleMentionQuestion(message.channel_id, message.id, question).catch((error) => {
+    console.error("Error handling mention question:", error);
+    sendGatewayChannelMessage(
+      message.channel_id,
+      "❌ Sorry, I ran into an error while answering your question. Please try again or use the `/ask` command.",
+      message.id,
+    ).catch((err) => console.error("Error sending error reply:", err));
+  });
+}
+
+async function handleMentionQuestion(channelId: string, messageId: string, question: string) {
+  const articles = await loadArticlesCache();
+
+  if (articles.length === 0) {
+    await sendGatewayChannelMessage(
+      channelId,
+      "No help center articles are available right now. Please try again later.",
+      messageId,
+    );
+    return;
+  }
+
+  const answer = await askClaude(question, articles);
+
+  await sendGatewayChannelEmbed(channelId, messageId, {
+    title: "Ethos Help Center",
+    description: answer,
+    color: 0x2E7BC3, // Ethos blue
+    footer: {
+      text: "AI-generated answer based on Ethos help articles — may not be 100% accurate",
+    },
+    timestamp: new Date().toISOString(),
+  });
+}
+
+// ===== GATEWAY CHANNEL MESSAGE SENDERS =====
+
+async function sendGatewayChannelMessage(
+  channelId: string,
+  content: string,
+  replyToMessageId?: string,
+): Promise<void> {
+  const url = `https://discord.com/api/v10/channels/${channelId}/messages`;
+  const body: any = { content };
+  if (replyToMessageId) {
+    body.message_reference = { message_id: replyToMessageId };
+    body.allowed_mentions = { replied_user: false };
+  }
+  const response = await discordApiCall(url, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    console.error(`Failed to send channel message: ${response.status} ${text}`);
+  }
+}
+
+async function sendGatewayChannelEmbed(
+  channelId: string,
+  replyToMessageId: string,
+  embed: any,
+): Promise<void> {
+  const url = `https://discord.com/api/v10/channels/${channelId}/messages`;
+  const response = await discordApiCall(url, {
+    method: "POST",
+    body: JSON.stringify({
+      embeds: [embed],
+      message_reference: { message_id: replyToMessageId },
+      allowed_mentions: { replied_user: false },
+    }),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    console.error(`Failed to send channel embed: ${response.status} ${text}`);
+  }
+}
+
 // Start HTTP server
 serve(async (req) => {
   const url = new URL(req.url);
@@ -2547,6 +2898,14 @@ serve(async (req) => {
 
   return new Response("OK", { status: 200 });
 });
+
+// Start Discord Gateway WebSocket (runs concurrently with HTTP server).
+// Deferred via setTimeout to ensure all module-level constants (e.g. SYNC_CONFIG) are initialized.
+setTimeout(() => {
+  connectGateway().catch((error) => {
+    console.error("Failed to start Gateway WebSocket:", error);
+  });
+}, 0);
 
 // ===== AUTOMATED ROLE SYNCHRONIZATION =====
 
