@@ -440,6 +440,7 @@ function findEthosCliPath(): string {
 }
 
 const ETHOS_CLI_PATH = findEthosCliPath();
+console.log(`🔧 Ethos CLI path resolved to: ${ETHOS_CLI_PATH}`);
 
 // Run an ethos CLI command with timeout and JSON parsing
 async function runEthosCli(args: string[]): Promise<{ success: boolean; data?: any; error?: string }> {

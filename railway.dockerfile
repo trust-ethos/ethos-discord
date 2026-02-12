@@ -5,8 +5,13 @@ RUN apt-get update && apt-get install -y curl \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && npm install -g @trust-ethos/cli \
-    && ln -sf "$(npm bin -g)/ethos" /usr/bin/ethos \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Verify ethos CLI is installed and accessible
+RUN which ethos && ethos --version
+
+# Ensure npm global bin dir is in PATH for Deno subprocess
+ENV PATH="/usr/local/bin:/usr/bin:/usr/lib/node_modules/.bin:${PATH}"
 
 # Set working directory
 WORKDIR /app
