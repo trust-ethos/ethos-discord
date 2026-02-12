@@ -1636,8 +1636,108 @@ async function handleInteraction(
     case InteractionType.ApplicationCommand: {
       const commandName = interaction.data?.name;
 
-      // Handle ethosx command (Twitter profiles)
-      if (commandName === "ethosx") {
+      // Handle ethos command (Discord profiles)
+      if (commandName === "ethos") {
+        const userId = interaction.data.options?.[0].value?.toString();
+        if (!userId) {
+          return {
+            type: InteractionResponseType.ChannelMessageWithSource,
+            data: {
+              content: "Please mention a Discord user!",
+              flags: 64, // Ephemeral
+            },
+          };
+        }
+
+        // Immediately respond with "thinking" to prevent timeout
+        const deferredResponse = {
+          type: InteractionResponseType.DeferredChannelMessageWithSource,
+          data: {
+            flags: 0, // Explicitly set to 0 for public message
+          },
+        };
+
+        // Process asynchronously and send follow-up
+        (async () => {
+          try {
+            console.log("Discord user ID from interaction:", userId);
+
+            const userData = interaction.data.resolved?.users?.[userId];
+            const username = userData?.username || "Unknown User";
+            const displayName = userData?.global_name || username;
+
+            let avatarUrl: string | undefined = undefined;
+            if (userData?.avatar) {
+              avatarUrl = `https://cdn.discordapp.com/avatars/${userId}/${userData.avatar}.png`;
+            }
+
+            const profile = await fetchEthosProfileByDiscord(userId, avatarUrl);
+
+            if ("error" in profile) {
+              await sendPublicFollowUpMessage(interaction.id, interaction.token, profile.error);
+              return;
+            }
+
+            const title = `Ethos profile for ${displayName}`;
+
+            let profileUrl;
+            if (profile.primaryAddress) {
+              profileUrl = `https://app.ethos.network/profile/${profile.primaryAddress}?src=discord-agent`;
+            } else {
+              profileUrl = `https://app.ethos.network/profile/discord/${profile.userId}?src=discord-agent`;
+            }
+
+            await sendPublicFollowUpEmbedMessage(interaction.id, interaction.token, {
+              title,
+              url: profileUrl,
+              description: `${displayName} is considered **${getScoreLabel(profile.score)}**.`,
+              color: getScoreColor(profile.score),
+              thumbnail: {
+                url: avatarUrl || profile.avatar || "https://cdn.discordapp.com/embed/avatars/0.png",
+              },
+              fields: [
+                {
+                  name: "Ethos score",
+                  value: String(profile.score ?? "N/A"),
+                  inline: true,
+                },
+                {
+                  name: "Reviews",
+                  value: `${profile.elements?.totalReviews} (${profile.elements?.positivePercentage?.toFixed(2)}% positive)`,
+                  inline: true,
+                },
+                {
+                  name: "Vouched",
+                  value: `${profile.elements?.vouchBalance}e (${profile.elements?.vouchCount} vouchers)`,
+                  inline: true,
+                },
+                ...(profile.topReview
+                  ? [{
+                    name: "Most upvoted review",
+                    value: `*"${profile.topReview.comment}"* - ${profile.topReview.authorName} (${profile.topReview.upvotes} upvotes)`,
+                    inline: false,
+                  }]
+                  : []),
+              ],
+              footer: {
+                text: "Data from https://app.ethos.network",
+              },
+              timestamp: new Date().toISOString(),
+            });
+          } catch (error) {
+            console.error("Error in async ethos command:", error);
+            try {
+              await sendPublicFollowUpMessage(interaction.id, interaction.token,
+                "❌ An error occurred while fetching the profile. Please try again later.");
+            } catch (followUpError) {
+              console.error("Error sending follow-up message:", followUpError);
+            }
+          }
+        })();
+
+        return deferredResponse;
+      } // Handle ethosx command (Twitter profiles)
+      else if (commandName === "ethosx") {
         const twitterHandle = interaction.data.options?.[0].value?.toString();
         if (!twitterHandle) {
           return {

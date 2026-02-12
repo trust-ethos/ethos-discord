@@ -12,6 +12,17 @@ if (!DISCORD_TOKEN || !APPLICATION_ID) {
 // Register the slash commands
 const commands = [
   {
+    name: "ethos",
+    description: "Look up Ethos profile for a Discord user",
+    type: 1, // ChatInput
+    options: [{
+      type: 6, // User
+      name: "user",
+      description: "Discord user to look up",
+      required: true
+    }]
+  },
+  {
     name: "ethosx",
     description: "Look up Ethos profile for a Twitter user",
     type: 1, // ChatInput
