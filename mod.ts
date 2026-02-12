@@ -1827,6 +1827,7 @@ async function handleInteraction(
         }
 
         if (!ANTHROPIC_API_KEY || !INTERCOM_ACCESS_TOKEN) {
+          console.error(`/ask command blocked — ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY ? "set" : "MISSING"}, INTERCOM_ACCESS_TOKEN: ${INTERCOM_ACCESS_TOKEN ? "set" : "MISSING"}`);
           return {
             type: InteractionResponseType.ChannelMessageWithSource,
             data: {
