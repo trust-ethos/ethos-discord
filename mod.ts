@@ -4261,18 +4261,30 @@ function getRoleNameFromId(roleId: string): string {
       return "Verified";
     case ETHOS_VERIFIED_PROFILE_ROLE_ID:
       return "Verified Profile";
+    case ETHOS_VALIDATOR_DISTINGUISHED:
+      return "Distinguished Validator";
     case ETHOS_VALIDATOR_EXEMPLARY:
       return "Exemplary Validator";
     case ETHOS_VALIDATOR_REPUTABLE:
       return "Reputable Validator";
+    case ETHOS_VALIDATOR_ESTABLISHED:
+      return "Established Validator";
+    case ETHOS_VALIDATOR_KNOWN:
+      return "Known Validator";
     case ETHOS_VALIDATOR_NEUTRAL:
       return "Neutral Validator";
     case ETHOS_VALIDATOR_QUESTIONABLE:
       return "Questionable Validator";
+    case ETHOS_ROLE_DISTINGUISHED:
+      return "Distinguished";
     case ETHOS_ROLE_EXEMPLARY:
       return "Exemplary";
     case ETHOS_ROLE_REPUTABLE:
       return "Reputable";
+    case ETHOS_ROLE_ESTABLISHED:
+      return "Established";
+    case ETHOS_ROLE_KNOWN:
+      return "Known";
     case ETHOS_ROLE_NEUTRAL:
       return "Neutral";
     case ETHOS_ROLE_QUESTIONABLE:
