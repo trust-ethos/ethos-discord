@@ -115,38 +115,195 @@ const DISCORD_TOKEN = Deno.env.get("DISCORD_TOKEN");
 
 // Discord webhook URL for role change notifications
 const WEBHOOK_URL = Deno.env.get("DISCORD_WEBHOOK_URL");
-// Hardcoded role IDs
+// Meta role IDs (not score-based)
 const ETHOS_VERIFIED_ROLE_ID = "1330927513056186501"; // "verified" role (Discord connected)
 const ETHOS_VERIFIED_PROFILE_ROLE_ID = "1367923031040721046"; // "Verified ethos profile" role (active profile)
-// Role to remove upon verification if present (legacy/temporary role)
-const ROLE_TO_REMOVE_ON_VERIFY = "1410662938376802415";
-// Score-based role IDs (regular) - Updated for new scoring system
-const ETHOS_ROLE_DISTINGUISHED = Deno.env.get("ETHOS_ROLE_DISTINGUISHED") ||
-  "1403227201809285214"; // Score 2200-2399
-const ETHOS_ROLE_EXEMPLARY = Deno.env.get("ETHOS_ROLE_EXEMPLARY") ||
-  "1253205892917231677"; // Score 2000-2199
-const ETHOS_ROLE_REPUTABLE = Deno.env.get("ETHOS_ROLE_REPUTABLE") ||
-  "1253206005169258537"; // Score 1800-1999
-const ETHOS_ROLE_ESTABLISHED = Deno.env.get("ETHOS_ROLE_ESTABLISHED") ||
-  "1403226783540842546"; // Score 1600-1799
-const ETHOS_ROLE_KNOWN = Deno.env.get("ETHOS_ROLE_KNOWN") ||
-  "1403227015959548005"; // Score 1400-1599
-const ETHOS_ROLE_NEUTRAL = Deno.env.get("ETHOS_ROLE_NEUTRAL") ||
-  "1253206143182831637"; // Score 1200-1399
-const ETHOS_ROLE_QUESTIONABLE = Deno.env.get("ETHOS_ROLE_QUESTIONABLE") ||
-  "1253206252306305024"; // Score 800-1199
-const ETHOS_ROLE_UNTRUSTED = Deno.env.get("ETHOS_ROLE_UNTRUSTED") ||
-  "1253206385877975043"; // Score < 800
+const ROLE_TO_REMOVE_ON_VERIFY = "1410662938376802415"; // Legacy/temporary role removed on verify
 
-// Validator score-based role IDs - Updated for new scoring system
-const ETHOS_VALIDATOR_DISTINGUISHED = "1403227263318757470"; // Score 2200-2399 + validator
-const ETHOS_VALIDATOR_EXEMPLARY = "1377685521723293706"; // Score 2000-2199 + validator
-const ETHOS_VALIDATOR_REPUTABLE = "1377477396759842936"; // Score 1800-1999 + validator
-const ETHOS_VALIDATOR_ESTABLISHED = "1403226922443345981"; // Score 1600-1799 + validator
-const ETHOS_VALIDATOR_KNOWN = "1403227117415825458"; // Score 1400-1599 + validator
-const ETHOS_VALIDATOR_NEUTRAL = "1377685710026571876"; // Score 1200-1399 + validator
-const ETHOS_VALIDATOR_QUESTIONABLE = "1377688531522158632"; // Score 800-1199 + validator
-// No untrusted validator role - untrusted users get regular untrusted role even if they have validator
+// ===== DATA-DRIVEN ROLE CONFIGURATION =====
+
+// Score tiers ordered highest-first for matching
+const SCORE_TIERS: { name: string; minScore: number; color: number }[] = [
+  { name: "Renowned",      minScore: 2600, color: 0x7E51B9 }, // Purple
+  { name: "Revered",       minScore: 2400, color: 0x836DA6 }, // Light Purple
+  { name: "Distinguished", minScore: 2200, color: 0x9B59B6 }, // Purple
+  { name: "Exemplary",     minScore: 2000, color: 0x127F31 }, // Green
+  { name: "Reputable",     minScore: 1800, color: 0x2E7BC3 }, // Blue
+  { name: "Established",   minScore: 1600, color: 0x17A2B8 }, // Teal
+  { name: "Known",         minScore: 1400, color: 0x28A745 }, // Light Green
+  { name: "Neutral",       minScore: 1200, color: 0xC1C0B6 }, // Gray
+  { name: "Questionable",  minScore: 800,  color: 0xCC9A1A }, // Yellow
+  { name: "Untrusted",     minScore: 0,    color: 0xB72B38 }, // Red
+];
+
+// Badge variants: key is stored in registry, suffix is appended to tier name for Discord role name
+const BADGE_VARIANTS: { key: string; suffix: string }[] = [
+  { key: "base",            suffix: "" },
+  { key: "validator",       suffix: " Validator" },
+  { key: "human",           suffix: " Human" },
+  { key: "human_validator", suffix: " Human Validator" },
+];
+
+// Untrusted only gets the base variant
+function getVariantsForTier(tierName: string): string[] {
+  if (tierName === "Untrusted") return ["base"];
+  return BADGE_VARIANTS.map((v) => v.key);
+}
+
+// In-memory map: "TierName:variant" → Discord role ID
+const roleRegistry = new Map<string, string>();
+
+// Legacy hardcoded role IDs for migration/cleanup
+const LEGACY_ROLE_IDS: Record<string, string> = {
+  // Regular roles
+  "Distinguished:base": "1403227201809285214",
+  "Exemplary:base": "1253205892917231677",
+  "Reputable:base": "1253206005169258537",
+  "Established:base": "1403226783540842546",
+  "Known:base": "1403227015959548005",
+  "Neutral:base": "1253206143182831637",
+  "Questionable:base": "1253206252306305024",
+  "Untrusted:base": "1253206385877975043",
+  // Validator roles
+  "Distinguished:validator": "1403227263318757470",
+  "Exemplary:validator": "1377685521723293706",
+  "Reputable:validator": "1377477396759842936",
+  "Established:validator": "1403226922443345981",
+  "Known:validator": "1403227117415825458",
+  "Neutral:validator": "1377685710026571876",
+  "Questionable:validator": "1377688531522158632",
+};
+
+// Global initialization state
+let roleInitPromise: Promise<void> | null = null;
+
+// Initialize all score roles in the Discord guild (create if missing, store in KV)
+async function initializeRoles(guildId: string): Promise<void> {
+  console.log("[ROLE-INIT] === Starting role initialization ===");
+  const startTime = Date.now();
+
+  // 1. Load any previously stored role IDs from Deno KV
+  const kvRoleIds = new Map<string, string>();
+  if (kv) {
+    for await (const entry of kv.list({ prefix: ["ethos_role_id"] })) {
+      const [, tierName, variant] = entry.key as [string, string, string];
+      kvRoleIds.set(`${tierName}:${variant}`, entry.value as string);
+    }
+    console.log(`[ROLE-INIT] Loaded ${kvRoleIds.size} role IDs from KV`);
+  }
+
+  // 2. Fetch all existing guild roles
+  const guildRolesUrl = `https://discord.com/api/v10/guilds/${guildId}/roles`;
+  const guildRolesResponse = await discordApiCall(guildRolesUrl, { method: "GET" });
+  if (!guildRolesResponse.ok) {
+    console.error(`[ROLE-INIT] Failed to fetch guild roles: ${guildRolesResponse.status}`);
+    // Fall back to KV + legacy IDs
+    for (const [key, id] of kvRoleIds) roleRegistry.set(key, id);
+    for (const [key, id] of Object.entries(LEGACY_ROLE_IDS)) {
+      if (!roleRegistry.has(key)) roleRegistry.set(key, id);
+    }
+    // roles initialized
+    console.log(`[ROLE-INIT] Fell back to ${roleRegistry.size} cached/legacy roles`);
+    return;
+  }
+
+  const guildRoles: { id: string; name: string }[] = await guildRolesResponse.json();
+  const guildRolesByName = new Map<string, string>();
+  const guildRoleIdsSet = new Set<string>();
+  for (const role of guildRoles) {
+    guildRolesByName.set(role.name, role.id);
+    guildRoleIdsSet.add(role.id);
+  }
+  console.log(`[ROLE-INIT] Guild has ${guildRoles.length} roles`);
+
+  let createdCount = 0;
+
+  // 3. For each tier+variant, find or create the role
+  for (const tier of SCORE_TIERS) {
+    const variants = getVariantsForTier(tier.name);
+    for (const variantKey of variants) {
+      const registryKey = `${tier.name}:${variantKey}`;
+      const variant = BADGE_VARIANTS.find((v) => v.key === variantKey)!;
+      const roleName = `${tier.name}${variant.suffix}`;
+
+      // Check KV first — if the stored ID still exists in the guild, use it
+      const kvId = kvRoleIds.get(registryKey);
+      if (kvId && guildRoleIdsSet.has(kvId)) {
+        roleRegistry.set(registryKey, kvId);
+        continue;
+      }
+
+      // Check legacy IDs
+      const legacyId = LEGACY_ROLE_IDS[registryKey];
+      if (legacyId && guildRoleIdsSet.has(legacyId)) {
+        roleRegistry.set(registryKey, legacyId);
+        // Persist to KV
+        if (kv) await kv.set(["ethos_role_id", tier.name, variantKey], legacyId);
+        continue;
+      }
+
+      // Search guild roles by exact name match
+      const existingId = guildRolesByName.get(roleName);
+      if (existingId) {
+        roleRegistry.set(registryKey, existingId);
+        if (kv) await kv.set(["ethos_role_id", tier.name, variantKey], existingId);
+        console.log(`[ROLE-INIT] Found existing role "${roleName}" (${existingId})`);
+        continue;
+      }
+
+      // Create the role
+      console.log(`[ROLE-INIT] Creating role "${roleName}" with color 0x${tier.color.toString(16)}`);
+      const createUrl = `https://discord.com/api/v10/guilds/${guildId}/roles`;
+      const createResponse = await discordApiCall(createUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: roleName,
+          color: tier.color,
+          hoist: false,
+          mentionable: false,
+        }),
+      });
+
+      if (createResponse.ok) {
+        const newRole = await createResponse.json();
+        roleRegistry.set(registryKey, newRole.id);
+        if (kv) await kv.set(["ethos_role_id", tier.name, variantKey], newRole.id);
+        guildRoleIdsSet.add(newRole.id);
+        createdCount++;
+        console.log(`[ROLE-INIT] Created role "${roleName}" (${newRole.id})`);
+      } else {
+        console.error(`[ROLE-INIT] Failed to create role "${roleName}": ${createResponse.status}`);
+        // Use legacy ID as last resort
+        if (legacyId) {
+          roleRegistry.set(registryKey, legacyId);
+        }
+      }
+
+      // Rate-limit delay between role creations
+      if (createdCount > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    }
+  }
+
+  rolesInitialized = true;
+  const elapsed = Date.now() - startTime;
+  console.log(`[ROLE-INIT] === Initialization complete: ${roleRegistry.size} roles registered, ${createdCount} created (${elapsed}ms) ===`);
+}
+
+// Get all role IDs that the bot manages (for diffing/cleanup)
+function getAllManagedRoleIds(): string[] {
+  const ids = new Set<string>();
+  // Meta roles
+  ids.add(ETHOS_VERIFIED_ROLE_ID);
+  ids.add(ETHOS_VERIFIED_PROFILE_ROLE_ID);
+  // All registry roles
+  for (const id of roleRegistry.values()) ids.add(id);
+  // All legacy role IDs (for migration cleanup)
+  for (const id of Object.values(LEGACY_ROLE_IDS)) ids.add(id);
+  return [...ids];
+}
 
 // AI Help Center env vars
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
@@ -693,6 +850,54 @@ async function checkUserOwnsValidator(userId: string): Promise<boolean> {
   } catch (error) {
     console.error("Error checking if user owns validator:", error);
     return false;
+  }
+}
+
+// Get both human verification and validator status from a single API call
+async function getUserVerificationStatus(userId: string): Promise<{ isHumanVerified: boolean; hasValidator: boolean }> {
+  try {
+    const cleanUserId = userId.replace("@", "").replace("<", "").replace(">", "");
+    const response = await fetch(`https://api.ethos.network/api/v2/users/by/discord`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Ethos-Client": "ethos-discord",
+      },
+      body: JSON.stringify({ discordIds: [cleanUserId] }),
+    });
+
+    if (!response.ok) {
+      console.log(`getUserVerificationStatus failed for ${userId}: ${response.status}`);
+      // Fall back to legacy validator check
+      const hasValidator = await checkUserOwnsValidator(userId);
+      return { isHumanVerified: false, hasValidator };
+    }
+
+    const data = await response.json();
+    const entries = data.data || data;
+    const userDataArray = Array.isArray(entries) ? entries : [entries];
+
+    for (const userData of userDataArray) {
+      if (!userData) continue;
+      const discordUserkey = userData.userkeys?.find((uk: string) => uk.startsWith("service:discord:"));
+      if (discordUserkey) {
+        const uid = discordUserkey.replace("service:discord:", "");
+        if (uid === cleanUserId) {
+          const isHumanVerified = userData.humanVerificationStatus === "VERIFIED";
+          const hasValidator = (userData.validatorNftCount || 0) > 0;
+          console.log(`getUserVerificationStatus(${userId}): humanVerified=${isHumanVerified}, validator=${hasValidator}`);
+          return { isHumanVerified, hasValidator };
+        }
+      }
+    }
+
+    // User not found in response — fall back to legacy validator check
+    const hasValidator = await checkUserOwnsValidator(userId);
+    return { isHumanVerified: false, hasValidator };
+  } catch (error) {
+    console.error(`Error in getUserVerificationStatus(${userId}):`, error);
+    const hasValidator = await checkUserOwnsValidator(userId);
+    return { isHumanVerified: false, hasValidator };
   }
 }
 
@@ -1584,41 +1789,27 @@ async function verifyRequest(request: Request): Promise<APIInteraction | null> {
 }
 
 // Function to get role ID based on score (regular roles) - Updated for new scoring system
-function getRoleIdForScore(score: number): string {
-  if (score >= 2200) return ETHOS_ROLE_DISTINGUISHED; // 2200-2399
-  if (score >= 2000) return ETHOS_ROLE_EXEMPLARY;     // 2000-2199
-  if (score >= 1800) return ETHOS_ROLE_REPUTABLE;     // 1800-1999
-  if (score >= 1600) return ETHOS_ROLE_ESTABLISHED;   // 1600-1799
-  if (score >= 1400) return ETHOS_ROLE_KNOWN;         // 1400-1599
-  if (score >= 1200) return ETHOS_ROLE_NEUTRAL;       // 1200-1399
-  if (score >= 800) return ETHOS_ROLE_QUESTIONABLE;   // 800-1199
-  return ETHOS_ROLE_UNTRUSTED;                        // < 800
+// Get the tier for a given score (iterates highest-first)
+function getTierForScore(score: number): { name: string; minScore: number; color: number } {
+  for (const tier of SCORE_TIERS) {
+    if (score >= tier.minScore) return tier;
+  }
+  return SCORE_TIERS[SCORE_TIERS.length - 1]; // Untrusted fallback
 }
 
-// Function to get validator role ID based on score - Updated for new scoring system
-function getValidatorRoleIdForScore(score: number): string | null {
-  if (score >= 2200) return ETHOS_VALIDATOR_DISTINGUISHED; // 2200-2399
-  if (score >= 2000) return ETHOS_VALIDATOR_EXEMPLARY;     // 2000-2199
-  if (score >= 1800) return ETHOS_VALIDATOR_REPUTABLE;     // 1800-1999
-  if (score >= 1600) return ETHOS_VALIDATOR_ESTABLISHED;   // 1600-1799
-  if (score >= 1400) return ETHOS_VALIDATOR_KNOWN;         // 1400-1599
-  if (score >= 1200) return ETHOS_VALIDATOR_NEUTRAL;       // 1200-1399
-  if (score >= 800) return ETHOS_VALIDATOR_QUESTIONABLE;   // 800-1199
-  return null; // No validator role for untrusted - they get regular untrusted role
+// Get role ID from roleRegistry for a score + variant
+function getRoleIdForScore(score: number, variant = "base"): string | null {
+  const tier = getTierForScore(score);
+  // Untrusted only gets base variant
+  if (tier.name === "Untrusted" && variant !== "base") return null;
+  const key = `${tier.name}:${variant}`;
+  return roleRegistry.get(key) || LEGACY_ROLE_IDS[key] || null;
 }
 
-// Function to get role name based on score - Updated for new scoring system
+
+
 function getRoleNameForScore(score: number): string {
-  if (score >= 2600) return "Renowned";      // 2600-2800
-  if (score >= 2400) return "Revered";       // 2400-2599
-  if (score >= 2200) return "Distinguished"; // 2200-2399
-  if (score >= 2000) return "Exemplary";     // 2000-2199
-  if (score >= 1800) return "Reputable";     // 1800-1999
-  if (score >= 1600) return "Established";   // 1600-1799
-  if (score >= 1400) return "Known";         // 1400-1599
-  if (score >= 1200) return "Neutral";       // 1200-1399
-  if (score >= 800) return "Questionable";   // 800-1199
-  return "Untrusted";                        // < 800
+  return getTierForScore(score).name;
 }
 
 // Handle Discord interactions
@@ -1853,29 +2044,11 @@ async function handleInteraction(
 }
 
 function getScoreLabel(score: number): string {
-  if (score >= 2600) return "renowned";      // 2600-2800
-  if (score >= 2400) return "revered";       // 2400-2599
-  if (score >= 2200) return "distinguished"; // 2200-2399
-  if (score >= 2000) return "exemplary";     // 2000-2199
-  if (score >= 1800) return "reputable";     // 1800-1999
-  if (score >= 1600) return "established";   // 1600-1799
-  if (score >= 1400) return "known";         // 1400-1599
-  if (score >= 1200) return "neutral";       // 1200-1399
-  if (score >= 800) return "questionable";   // 800-1199
-  return "untrusted";                        // < 800
+  return getTierForScore(score).name.toLowerCase();
 }
 
 function getScoreColor(score: number): number {
-  if (score >= 2600) return 0x7E51B9; // Renowned - Purple (#7E51B9)
-  if (score >= 2400) return 0x836DA6; // Revered - Light Purple (#836DA6)
-  if (score >= 2200) return 0x9B59B6; // Distinguished - Purple
-  if (score >= 2000) return 0x127F31; // Exemplary - Green
-  if (score >= 1800) return 0x2E7BC3; // Reputable - Blue
-  if (score >= 1600) return 0x17A2B8; // Established - Teal
-  if (score >= 1400) return 0x28A745; // Known - Light Green
-  if (score >= 1200) return 0xC1C0B6; // Neutral - Gray
-  if (score >= 800) return 0xCC9A1A; // Questionable - Yellow
-  return 0xB72B38; // Untrusted - Red
+  return getTierForScore(score).color;
 }
 
 // ===== DISCORD GATEWAY WEBSOCKET =====
@@ -2091,6 +2264,18 @@ function handleGatewayDispatch(eventName: string, data: any) {
         : null;
       gatewayBotUserId = data.user?.id ?? null;
       console.log(`✅ Gateway READY — bot user ID: ${gatewayBotUserId}, session: ${gatewaySessionId}`);
+
+      // Initialize score roles on startup
+      {
+        const guildId = Deno.env.get("DISCORD_GUILD_ID");
+        if (guildId) {
+          roleInitPromise = initializeRoles(guildId).catch((err) => {
+            console.error("[ROLE-INIT] Failed to initialize roles on startup:", err);
+          });
+        } else {
+          console.warn("[ROLE-INIT] DISCORD_GUILD_ID not set — skipping role initialization");
+        }
+      }
       break;
     case "RESUMED":
       console.log("✅ Gateway session resumed");
@@ -2426,14 +2611,18 @@ async function handleMentionVerify(channelId: string, messageId: string, guildId
         "You don't have an Ethos profile OR you haven't connected Discord to your Ethos account yet. Ethos users can connect their Discord account at https://app.ethos.network/profile/settings?tab=social";
     } else {
       const profile = verifyResult.profile;
-      const ownsValidator = await checkUserOwnsValidator(userId);
+      const { hasValidator: ownsValidator, isHumanVerified } = await getUserVerificationStatus(userId);
       const scoreName = getRoleNameForScore(profile.score);
 
       // Send webhook notification for successful role changes
       if (verifyResult.changes.length > 0) {
+        const statusParts = [];
+        if (ownsValidator) statusParts.push("Validator");
+        if (isHumanVerified) statusParts.push("Human Verified");
+        if (statusParts.length === 0) statusParts.push("No special status");
         await sendRoleChangeWebhook(userId, verifyResult.changes, "user-initiated", {
           userScore: profile.score,
-          profileInfo: `${profile.name || `Discord User ${userId}`} - ${ownsValidator ? 'Has Validator NFT' : 'No Validator NFT'}`,
+          profileInfo: `${profile.name || `Discord User ${userId}`} - ${statusParts.join(" + ")}`,
           guildId: guildId,
         });
       }
@@ -2448,20 +2637,26 @@ async function handleMentionVerify(channelId: string, messageId: string, guildId
       }
 
       // Show the appropriate role information
-      if (ownsValidator) {
-        const validatorRoleId = getValidatorRoleIdForScore(profile.score);
-        if (validatorRoleId) {
-          const validatorRoleName = getRoleNameFromId(validatorRoleId);
-          resultContent +=
-            `You have a ${scoreName} score of ${profile.score} and the ${validatorRoleName} role.`;
+      {
+        const tier = getTierForScore(profile.score);
+        let variant: string;
+        if (tier.name === "Untrusted") {
+          variant = "base";
+        } else if (ownsValidator && isHumanVerified) {
+          variant = "human_validator";
+        } else if (isHumanVerified) {
+          variant = "human";
+        } else if (ownsValidator) {
+          variant = "validator";
         } else {
-          // Untrusted users get regular untrusted role even with validator
-          resultContent +=
-            `You have a ${scoreName} score of ${profile.score}. Note: Untrusted users receive the regular Untrusted role even with a validator NFT.`;
+          variant = "base";
         }
-      } else {
-        resultContent +=
-          `You have a ${scoreName} score of ${profile.score}.`;
+        const roleId = getRoleIdForScore(profile.score, variant);
+        const roleName = roleId ? getRoleNameFromId(roleId) : scoreName;
+        resultContent += `You have a ${scoreName} score of ${profile.score} and the ${roleName} role.`;
+        if (tier.name === "Untrusted" && (ownsValidator || isHumanVerified)) {
+          resultContent += " Note: Untrusted users receive the base Untrusted role regardless of other status.";
+        }
       }
     }
 
@@ -3188,6 +3383,53 @@ serve(async (req) => {
     }
   }
 
+  // Handle role initialization endpoint
+  if (url.pathname === "/initialize-roles" && req.method === "POST") {
+    try {
+      const authHeader = req.headers.get("Authorization");
+      const expectedAuth = Deno.env.get("SYNC_AUTH_TOKEN");
+
+      if (expectedAuth && authHeader !== `Bearer ${expectedAuth}`) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+
+      let guildId: string | undefined;
+      try {
+        const body = await req.json();
+        guildId = body.guildId;
+      } catch {
+        // No body or invalid JSON, use default
+      }
+
+      const targetGuildId = guildId || Deno.env.get("DISCORD_GUILD_ID");
+      if (!targetGuildId) {
+        return new Response(
+          JSON.stringify({ success: false, error: "guildId is required" }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      // Run initialization
+      roleInitPromise = initializeRoles(targetGuildId);
+      await roleInitPromise;
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          message: "Role initialization complete",
+          rolesRegistered: roleRegistry.size,
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      );
+    } catch (error) {
+      console.error("Error in /initialize-roles:", error);
+      return new Response(
+        JSON.stringify({ success: false, error: "Failed to initialize roles" }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
   // Handle validator verification status endpoint
   if (url.pathname === "/validator-check-status" && req.method === "GET") {
     try {
@@ -3429,19 +3671,15 @@ async function getMembersWithHighScoreRoles(guildId: string): Promise<string[]> 
   try {
     console.log("[RECALC] Fetching members with high score roles (1400+) from guild:", guildId);
 
-    // All roles that indicate score >= 1400 (both regular and validator versions)
-    const highScoreRoles = [
-      ETHOS_ROLE_KNOWN,                // 1400-1599
-      ETHOS_ROLE_ESTABLISHED,          // 1600-1799
-      ETHOS_ROLE_REPUTABLE,            // 1800-1999
-      ETHOS_ROLE_EXEMPLARY,            // 2000-2199
-      ETHOS_ROLE_DISTINGUISHED,        // 2200+
-      ETHOS_VALIDATOR_KNOWN,           // 1400-1599 + validator
-      ETHOS_VALIDATOR_ESTABLISHED,     // 1600-1799 + validator
-      ETHOS_VALIDATOR_REPUTABLE,       // 1800-1999 + validator
-      ETHOS_VALIDATOR_EXEMPLARY,       // 2000-2199 + validator
-      ETHOS_VALIDATOR_DISTINGUISHED,   // 2200+ + validator
-    ];
+    // All roles that indicate score >= 1400 (all variants)
+    const highScoreTiers = SCORE_TIERS.filter(t => t.minScore >= 1400);
+    const highScoreRoles: string[] = [];
+    for (const tier of highScoreTiers) {
+      for (const variantKey of getVariantsForTier(tier.name)) {
+        const id = roleRegistry.get(`${tier.name}:${variantKey}`) || LEGACY_ROLE_IDS[`${tier.name}:${variantKey}`];
+        if (id) highScoreRoles.push(id);
+      }
+    }
 
     const url = `https://discord.com/api/v10/guilds/${guildId}/members?limit=1000`;
 
@@ -3471,50 +3709,47 @@ async function getMembersWithHighScoreRoles(guildId: string): Promise<string[]> 
 
 // Function to get current Ethos roles for a user
 function getCurrentEthosRoles(userRoles: string[]): string[] {
-  const ethosRoles = [
-    ETHOS_VERIFIED_ROLE_ID,
-    ETHOS_VERIFIED_PROFILE_ROLE_ID,
-    ETHOS_VALIDATOR_EXEMPLARY,
-    ETHOS_VALIDATOR_REPUTABLE,
-    ETHOS_VALIDATOR_NEUTRAL,
-    ETHOS_VALIDATOR_QUESTIONABLE,
-    ETHOS_ROLE_EXEMPLARY,
-    ETHOS_ROLE_REPUTABLE,
-    ETHOS_ROLE_NEUTRAL,
-    ETHOS_ROLE_QUESTIONABLE,
-    ETHOS_ROLE_UNTRUSTED,
-  ];
-
-  return userRoles.filter((roleId) => ethosRoles.includes(roleId));
+  const managedIds = getAllManagedRoleIds();
+  return userRoles.filter((roleId) => managedIds.includes(roleId));
 }
 
 // Function to get expected roles based on Ethos profile
 function getExpectedRoles(
   score: number,
   hasValidator: boolean,
+  isHumanVerified: boolean,
   hasValidProfile: boolean,
 ): string[] {
   const expectedRoles = [ETHOS_VERIFIED_ROLE_ID]; // Always has basic verified role
 
-  // Add verified profile role if they have a valid profile
   if (hasValidProfile) {
     expectedRoles.push(ETHOS_VERIFIED_PROFILE_ROLE_ID);
   }
 
-  // Add score-based role only if they have a valid profile
   if (hasValidProfile) {
-    if (hasValidator) {
-      // If they have a validator, give them the validator version of their score role
-      const validatorRoleId = getValidatorRoleIdForScore(score);
-      if (validatorRoleId) {
-        expectedRoles.push(validatorRoleId);
-      } else {
-        // Untrusted users get regular untrusted role even with validator
-        expectedRoles.push(getRoleIdForScore(score));
-      }
+    // Determine the best variant for this user
+    let variant: string;
+    const tier = getTierForScore(score);
+
+    if (tier.name === "Untrusted") {
+      variant = "base"; // Untrusted always gets base
+    } else if (hasValidator && isHumanVerified) {
+      variant = "human_validator";
+    } else if (isHumanVerified) {
+      variant = "human";
+    } else if (hasValidator) {
+      variant = "validator";
     } else {
-      // No validator, give them regular score role
-      expectedRoles.push(getRoleIdForScore(score));
+      variant = "base";
+    }
+
+    const roleId = getRoleIdForScore(score, variant);
+    if (roleId) {
+      expectedRoles.push(roleId);
+    } else {
+      // Fallback to base if variant role not found
+      const baseId = getRoleIdForScore(score, "base");
+      if (baseId) expectedRoles.push(baseId);
     }
   }
 
@@ -3548,6 +3783,9 @@ async function syncUserRoles(
   forceSync = false,
   isBulkOperation = false,
 ): Promise<{ success: boolean; changes: string[]; skipped?: boolean }> {
+  // Wait for role initialization if pending
+  if (roleInitPromise) await roleInitPromise;
+
   try {
     const progressPrefix = userNumber && totalUsers
       ? `[${userNumber}/${totalUsers}] `
@@ -3715,11 +3953,11 @@ async function syncUserRoles(
       }`,
     );
 
-    // Check validator status
-    const hasValidator = await checkUserOwnsValidator(userId);
+    // Check validator + human verification status
+    const { hasValidator, isHumanVerified } = await getUserVerificationStatus(userId);
 
     // Get expected roles
-    const expectedRoles = getExpectedRoles(profile.score, hasValidator, true);
+    const expectedRoles = getExpectedRoles(profile.score, hasValidator, isHumanVerified, true);
 
     // Compare current vs expected roles
     const rolesToAdd = expectedRoles.filter((roleId) =>
@@ -4256,44 +4494,28 @@ async function performChunkedSyncForGuild(
 
 // Helper function to get role name from role ID
 function getRoleNameFromId(roleId: string): string {
-  switch (roleId) {
-    case ETHOS_VERIFIED_ROLE_ID:
-      return "Verified";
-    case ETHOS_VERIFIED_PROFILE_ROLE_ID:
-      return "Verified Profile";
-    case ETHOS_VALIDATOR_DISTINGUISHED:
-      return "Distinguished Validator";
-    case ETHOS_VALIDATOR_EXEMPLARY:
-      return "Exemplary Validator";
-    case ETHOS_VALIDATOR_REPUTABLE:
-      return "Reputable Validator";
-    case ETHOS_VALIDATOR_ESTABLISHED:
-      return "Established Validator";
-    case ETHOS_VALIDATOR_KNOWN:
-      return "Known Validator";
-    case ETHOS_VALIDATOR_NEUTRAL:
-      return "Neutral Validator";
-    case ETHOS_VALIDATOR_QUESTIONABLE:
-      return "Questionable Validator";
-    case ETHOS_ROLE_DISTINGUISHED:
-      return "Distinguished";
-    case ETHOS_ROLE_EXEMPLARY:
-      return "Exemplary";
-    case ETHOS_ROLE_REPUTABLE:
-      return "Reputable";
-    case ETHOS_ROLE_ESTABLISHED:
-      return "Established";
-    case ETHOS_ROLE_KNOWN:
-      return "Known";
-    case ETHOS_ROLE_NEUTRAL:
-      return "Neutral";
-    case ETHOS_ROLE_QUESTIONABLE:
-      return "Questionable";
-    case ETHOS_ROLE_UNTRUSTED:
-      return "Untrusted";
-    default:
-      return "Unknown";
+  if (roleId === ETHOS_VERIFIED_ROLE_ID) return "Verified";
+  if (roleId === ETHOS_VERIFIED_PROFILE_ROLE_ID) return "Verified Profile";
+
+  // Reverse lookup from roleRegistry
+  for (const [key, id] of roleRegistry) {
+    if (id === roleId) {
+      const [tierName, variantKey] = key.split(":");
+      const variant = BADGE_VARIANTS.find((v) => v.key === variantKey);
+      return `${tierName}${variant?.suffix || ""}`;
+    }
   }
+
+  // Check legacy IDs
+  for (const [key, id] of Object.entries(LEGACY_ROLE_IDS)) {
+    if (id === roleId) {
+      const [tierName, variantKey] = key.split(":");
+      const variant = BADGE_VARIANTS.find((v) => v.key === variantKey);
+      return `${tierName}${variant?.suffix || ""}`;
+    }
+  }
+
+  return "Unknown";
 }
 
 // ===== VALIDATOR VERIFICATION SYSTEM =====
@@ -4320,35 +4542,25 @@ let validatorCheckStatus = {
 };
 
 // Function to get all validator role IDs
-function getAllValidatorRoles(): string[] {
-  return [
-    ETHOS_VALIDATOR_EXEMPLARY,
-    ETHOS_VALIDATOR_REPUTABLE,
-    ETHOS_VALIDATOR_NEUTRAL,
-    ETHOS_VALIDATOR_QUESTIONABLE,
-  ];
+// Get all non-base role IDs (validator, human, human_validator) from registry + legacy
+function getAllSpecialRoles(): string[] {
+  const ids: string[] = [];
+  for (const [key, id] of roleRegistry) {
+    if (!key.endsWith(":base")) ids.push(id);
+  }
+  for (const [key, id] of Object.entries(LEGACY_ROLE_IDS)) {
+    if (!key.endsWith(":base") && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
 }
 
-// Function to get equivalent regular role for a validator role
-function getRegularRoleForValidator(validatorRoleId: string): string {
-  switch (validatorRoleId) {
-    case ETHOS_VALIDATOR_EXEMPLARY:
-      return ETHOS_ROLE_EXEMPLARY;
-    case ETHOS_VALIDATOR_REPUTABLE:
-      return ETHOS_ROLE_REPUTABLE;
-    case ETHOS_VALIDATOR_NEUTRAL:
-      return ETHOS_ROLE_NEUTRAL;
-    case ETHOS_VALIDATOR_QUESTIONABLE:
-      return ETHOS_ROLE_QUESTIONABLE;
-    default:
-      return ETHOS_ROLE_UNTRUSTED; // Fallback
-  }
-}
+
+
 
 // Function to get all users with validator roles
 async function getUsersWithValidatorRoles(guildId: string): Promise<{userId: string, validatorRoles: string[]}[]> {
   try {
-    console.log("[VALIDATOR-CHECK] Fetching users with validator roles from guild:", guildId);
+    console.log("[VALIDATOR-CHECK] Fetching users with special (non-base) roles from guild:", guildId);
 
     // Get all members from the guild
     const url = `https://discord.com/api/v10/guilds/${guildId}/members?limit=1000`;
@@ -4360,24 +4572,24 @@ async function getUsersWithValidatorRoles(guildId: string): Promise<{userId: str
     }
 
     const members = await response.json();
-    const validatorRoleIds = getAllValidatorRoles();
+    const specialRoleIds = getAllSpecialRoles();
     const usersWithValidatorRoles: {userId: string, validatorRoles: string[]}[] = [];
 
-    // Filter members who have any validator roles
+    // Filter members who have any special roles (validator, human, human_validator)
     for (const member of members) {
-      const memberValidatorRoles = member.roles.filter((roleId: string) => 
-        validatorRoleIds.includes(roleId)
+      const memberSpecialRoles = member.roles.filter((roleId: string) =>
+        specialRoleIds.includes(roleId)
       );
-      
-      if (memberValidatorRoles.length > 0) {
+
+      if (memberSpecialRoles.length > 0) {
         usersWithValidatorRoles.push({
           userId: member.user.id,
-          validatorRoles: memberValidatorRoles
+          validatorRoles: memberSpecialRoles
         });
       }
     }
 
-    console.log(`[VALIDATOR-CHECK] Found ${usersWithValidatorRoles.length} users with validator roles`);
+    console.log(`[VALIDATOR-CHECK] Found ${usersWithValidatorRoles.length} users with special roles`);
     return usersWithValidatorRoles;
   } catch (error) {
     console.error("[VALIDATOR-CHECK] Error fetching users with validator roles:", error);
@@ -4385,83 +4597,95 @@ async function getUsersWithValidatorRoles(guildId: string): Promise<{userId: str
   }
 }
 
-// Function to verify and potentially demote a single user
+// Function to verify and potentially re-sync a single user's special role
 async function verifyUserValidator(
-  guildId: string, 
-  userId: string, 
+  guildId: string,
+  userId: string,
   validatorRoles: string[],
   userNumber?: number,
   totalUsers?: number
 ): Promise<{ success: boolean; changes: string[]; demoted: boolean }> {
   try {
     const progressPrefix = userNumber && totalUsers ? `[${userNumber}/${totalUsers}] ` : "";
-    console.log(`${progressPrefix}[VALIDATOR-CHECK] Checking validator status for user: ${userId}`);
+    console.log(`${progressPrefix}[STATUS-CHECK] Checking status for user: ${userId}`);
 
-    // Check if user still owns a validator NFT
-    const ownsValidator = await checkUserOwnsValidator(userId);
+    // Check both validator and human verification status
+    const { hasValidator, isHumanVerified } = await getUserVerificationStatus(userId);
 
-    if (ownsValidator) {
-      console.log(`${progressPrefix}[VALIDATOR-CHECK] User ${userId} still owns validator, no changes needed`);
+    // Get user's current Ethos profile to determine correct role
+    const profile = await fetchEthosProfileByDiscord(userId);
+    const changes: string[] = [];
+
+    let targetRoleId: string | null = null;
+    if (!("error" in profile) && typeof profile.score === "number") {
+      // Determine which variant the user should have
+      const tier = getTierForScore(profile.score);
+      let variant: string;
+      if (tier.name === "Untrusted") {
+        variant = "base";
+      } else if (hasValidator && isHumanVerified) {
+        variant = "human_validator";
+      } else if (isHumanVerified) {
+        variant = "human";
+      } else if (hasValidator) {
+        variant = "validator";
+      } else {
+        variant = "base";
+      }
+      targetRoleId = getRoleIdForScore(profile.score, variant);
+    } else {
+      targetRoleId = getRoleIdForScore(0, "base"); // Untrusted base
+    }
+
+    // Check if user already has the correct role
+    if (targetRoleId && validatorRoles.length === 1 && validatorRoles[0] === targetRoleId) {
+      console.log(`${progressPrefix}[STATUS-CHECK] User ${userId} already has correct role, no changes needed`);
       return { success: true, changes: [], demoted: false };
     }
 
-    console.log(`${progressPrefix}[VALIDATOR-CHECK] User ${userId} no longer owns validator, demoting from validator roles`);
-
-    // User no longer owns validator, need to demote them
-    const changes: string[] = [];
-
-    // Get user's current Ethos profile to determine correct regular role
-    const profile = await fetchEthosProfileByDiscord(userId);
-    
-    let targetRegularRole = ETHOS_ROLE_UNTRUSTED; // Default fallback
-    
-    if (!("error" in profile) && typeof profile.score === "number") {
-      // User has valid profile, determine role by score
-      targetRegularRole = getRoleIdForScore(profile.score);
-    }
-
-    // Remove all validator roles
-    for (const validatorRoleId of validatorRoles) {
-      const removeUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${validatorRoleId}`;
+    // Remove current special roles
+    for (const roleId of validatorRoles) {
+      const removeUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${roleId}`;
       const removeResponse = await discordApiCall(removeUrl, { method: "DELETE" });
 
       if (removeResponse.ok) {
-        const roleName = getRoleNameFromId(validatorRoleId);
+        const roleName = getRoleNameFromId(roleId);
         changes.push(`Removed ${roleName} role`);
-        console.log(`${progressPrefix}[VALIDATOR-CHECK] Removed validator role ${roleName} from user ${userId}`);
-      } else {
-        console.error(`${progressPrefix}[VALIDATOR-CHECK] Failed to remove validator role ${validatorRoleId} from user ${userId}: ${removeResponse.status}`);
+        console.log(`${progressPrefix}[STATUS-CHECK] Removed role ${roleName} from user ${userId}`);
       }
 
-      // Delay between role operations
       await new Promise(resolve => setTimeout(resolve, VALIDATOR_CHECK_CONFIG.DELAY_BETWEEN_USERS / 4));
     }
 
-    // Add the appropriate regular role
-    const addUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${targetRegularRole}`;
-    const addResponse = await discordApiCall(addUrl, { method: "PUT" });
+    // Add the correct role
+    if (targetRoleId) {
+      const addUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${targetRoleId}`;
+      const addResponse = await discordApiCall(addUrl, { method: "PUT" });
 
-    if (addResponse.ok) {
-      const roleName = getRoleNameFromId(targetRegularRole);
-      changes.push(`Added ${roleName} role`);
-      console.log(`${progressPrefix}[VALIDATOR-CHECK] Added regular role ${roleName} to user ${userId}`);
-    } else {
-      console.error(`${progressPrefix}[VALIDATOR-CHECK] Failed to add regular role ${targetRegularRole} to user ${userId}: ${addResponse.status}`);
+      if (addResponse.ok) {
+        const roleName = getRoleNameFromId(targetRoleId);
+        changes.push(`Added ${roleName} role`);
+        console.log(`${progressPrefix}[STATUS-CHECK] Added role ${roleName} to user ${userId}`);
+      }
     }
 
-    // Send webhook notification for validator demotion
+    // Send webhook notification
     if (changes.length > 0) {
-      await sendRoleChangeWebhook(userId, changes, "validator-check", {
-        profileInfo: !("error" in profile) && typeof profile.score === "number" 
-          ? `Score: ${profile.score} - No longer owns validator NFT`
-          : "No longer owns validator NFT",
+      const statusParts = [];
+      if (hasValidator) statusParts.push("Validator");
+      if (isHumanVerified) statusParts.push("Human Verified");
+      await sendRoleChangeWebhook(userId, changes, "status-check", {
+        profileInfo: !("error" in profile) && typeof profile.score === "number"
+          ? `Score: ${profile.score} - ${statusParts.join(" + ") || "No special status"}`
+          : "Status re-verified",
         guildId: guildId,
         processedCount: userNumber,
         totalCount: totalUsers,
       });
     }
 
-    return { success: true, changes, demoted: true };
+    const demoted = changes.some(c => c.startsWith("Removed"));
+    return { success: true, changes, demoted };
 
   } catch (error) {
     const progressPrefix = userNumber && totalUsers ? `[${userNumber}/${totalUsers}] ` : "";
@@ -4635,8 +4859,9 @@ export async function triggerValidatorVerification(guildId?: string): Promise<vo
 //
 // Railway cron configuration is in railway.toml file
 console.log("ℹ️ Automated cron jobs are configured via Railway cron service");
-console.log("ℹ️ - Validator verification: every 2 hours via POST /trigger-validator-check");
+console.log("ℹ️ - Validator/HV verification: every 2 hours via POST /trigger-validator-check");
 console.log("ℹ️ - Batch role sync: every 6 hours via POST /trigger-batch-sync");
+console.log("ℹ️ - Manual role init: POST /initialize-roles");
 console.log("ℹ️ See railway.toml for cron configuration");
 
 // ===== BATCH API FUNCTIONS =====
@@ -4760,6 +4985,10 @@ async function fetchEthosProfilesBatch(userIds: string[]): Promise<Map<string, a
             // Check if user has any Ethereum addresses (indicates primary address exists)
             const hasEthAddress = userStats.userkeys?.some((uk: string) => uk.startsWith('address:'));
             
+            // Extract human verification and validator status
+            const humanVerificationStatus = userStats.humanVerificationStatus || null;
+            const validatorNftCount = userStats.validatorNftCount || 0;
+
             results.set(userId, {
               ...existing,
               elements: {
@@ -4767,11 +4996,13 @@ async function fetchEthosProfilesBatch(userIds: string[]): Promise<Map<string, a
                 vouchCount,
                 positivePercentage,
               },
-              primaryAddress: hasEthAddress ? "detected" : undefined
+              primaryAddress: hasEthAddress ? "detected" : undefined,
+              humanVerificationStatus,
+              validatorNftCount,
             });
-            
+
             usersWithStats.add(userId);
-            console.log(`[BATCH] User ${userId}: reviews=${totalReviews}, vouches=${vouchCount}, address=${hasEthAddress ? 'yes' : 'no'}`);
+            console.log(`[BATCH] User ${userId}: reviews=${totalReviews}, vouches=${vouchCount}, address=${hasEthAddress ? 'yes' : 'no'}, humanVerified=${humanVerificationStatus}, validators=${validatorNftCount}`);
           }
         }
         
@@ -4926,9 +5157,12 @@ async function syncUserRolesBatch(
   userIds: string[],
   forceSync = false,
 ): Promise<{ success: boolean; changes: Map<string, string[]>; errors: string[] }> {
+  // Wait for role initialization if pending
+  if (roleInitPromise) await roleInitPromise;
+
   try {
     console.log(`[BATCH-SYNC] Starting batch sync for ${userIds.length} users`);
-    
+
     // Filter out recently synced users (unless forced)
     let usersToSync = userIds;
     if (!forceSync) {
@@ -4966,43 +5200,9 @@ async function syncUserRolesBatch(
       }
     }
 
-    // Batch fetch validator status for users with valid profiles
-    // FIX: Include users with score 0 and any hasProfile flag
-    const usersWithProfiles = Array.from(allProfileData.entries())
-      .filter(([_, profile]) => profile.hasProfile && profile.score !== undefined)
-      .map(([userId]) => userId);
-
     console.log(`[BATCH-SYNC] Profile data summary:`);
     for (const [userId, profile] of allProfileData.entries()) {
-      console.log(`[BATCH-SYNC] User ${userId}: hasProfile=${profile.hasProfile}, score=${profile.score}, elements=${JSON.stringify(profile.elements)}`);
-    }
-
-    const validatorStatuses = new Map<string, boolean>();
-    if (usersWithProfiles.length > 0) {
-      console.log(`[BATCH-SYNC] Checking validator status for ${usersWithProfiles.length} users with profiles`);
-      
-      // Check validators in smaller batches to avoid overwhelming the API
-      const validatorBatchSize = 50;
-      for (let i = 0; i < usersWithProfiles.length; i += validatorBatchSize) {
-        const batch = usersWithProfiles.slice(i, i + validatorBatchSize);
-        
-        // Check each user's validator status
-        const batchPromises = batch.map(async (userId) => {
-          const hasValidator = await checkUserOwnsValidator(userId);
-          console.log(`[BATCH-SYNC] User ${userId} validator check: ${hasValidator}`);
-          return [userId, hasValidator] as [string, boolean];
-        });
-        
-        const batchResults = await Promise.all(batchPromises);
-        for (const [userId, hasValidator] of batchResults) {
-          validatorStatuses.set(userId, hasValidator);
-        }
-        
-        // Delay between validator batches
-        if (i + validatorBatchSize < usersWithProfiles.length) {
-          await new Promise(resolve => setTimeout(resolve, 2000));
-        }
-      }
+      console.log(`[BATCH-SYNC] User ${userId}: hasProfile=${profile.hasProfile}, score=${profile.score}, humanVerified=${profile.humanVerificationStatus}, validators=${profile.validatorNftCount}`);
     }
 
     // Now process role changes for each user
@@ -5051,15 +5251,14 @@ async function syncUserRolesBatch(
           console.log(`[BATCH-SYNC]   hasInteractions=${hasInteractions}, isDefaultProfile=${isDefaultProfile}`);
           
           if (hasInteractions && !isDefaultProfile) {
-            // Has valid profile
-            expectedRoles.push(ETHOS_VERIFIED_PROFILE_ROLE_ID);
-            
-            const hasValidator = validatorStatuses.get(userId) || false;
-            console.log(`[BATCH-SYNC]   hasValidator=${hasValidator}`);
-            
-            const scoreRoles = getExpectedRoles(profile.score, hasValidator, true);
+            // Has valid profile — use HV + validator data from batch profile results
+            const hasValidator = (profile.validatorNftCount || 0) > 0;
+            const isHumanVerified = profile.humanVerificationStatus === "VERIFIED";
+            console.log(`[BATCH-SYNC]   hasValidator=${hasValidator}, isHumanVerified=${isHumanVerified}`);
+
+            const scoreRoles = getExpectedRoles(profile.score, hasValidator, isHumanVerified, true);
             expectedRoles = scoreRoles; // This includes verified + verified profile + score role
-            
+
             console.log(`[BATCH-SYNC]   Final expected roles: ${expectedRoles.map(id => getRoleNameFromId(id)).join(', ')}`);
           } else {
             console.log(`[BATCH-SYNC]   Profile invalid - keeping only basic verified role`);
