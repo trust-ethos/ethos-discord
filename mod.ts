@@ -128,15 +128,15 @@ let ETHOS_HUMAN_VALIDATOR_META_ROLE_ID: string | null = null;
 
 // Score tiers ordered highest-first for matching
 const SCORE_TIERS: { name: string; minScore: number; color: number }[] = [
-  { name: "Renowned",      minScore: 2600, color: 0x7E51B9 }, // Purple
+  { name: "Renowned",      minScore: 2600, color: 0x7A5EA0 }, // Purple
   { name: "Revered",       minScore: 2400, color: 0x836DA6 }, // Light Purple
-  { name: "Distinguished", minScore: 2200, color: 0x9B59B6 }, // Purple
-  { name: "Exemplary",     minScore: 2000, color: 0x127F31 }, // Green
+  { name: "Distinguished", minScore: 2200, color: 0x127F31 }, // Green
+  { name: "Exemplary",     minScore: 2000, color: 0x427B56 }, // Dark Green
   { name: "Reputable",     minScore: 1800, color: 0x2E7BC3 }, // Blue
-  { name: "Established",   minScore: 1600, color: 0x17A2B8 }, // Teal
-  { name: "Known",         minScore: 1400, color: 0x28A745 }, // Light Green
+  { name: "Established",   minScore: 1600, color: 0x4E86B9 }, // Light Blue
+  { name: "Known",         minScore: 1400, color: 0x7C8DA8 }, // Steel
   { name: "Neutral",       minScore: 1200, color: 0xC1C0B6 }, // Gray
-  { name: "Questionable",  minScore: 800,  color: 0xCC9A1A }, // Yellow
+  { name: "Questionable",  minScore: 800,  color: 0xC29010 }, // Yellow
   { name: "Untrusted",     minScore: 0,    color: 0xB72B38 }, // Red
 ];
 
