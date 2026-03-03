@@ -964,8 +964,8 @@ async function checkUserOwnsValidator(userId: string): Promise<boolean> {
   }
 }
 
-// Get both human verification and validator status from a single API call
-async function getUserVerificationStatus(userId: string): Promise<{ isHumanVerified: boolean; hasValidator: boolean }> {
+// Get human verification, validator status, XP, and influence from a single API call
+async function getUserVerificationStatus(userId: string): Promise<{ isHumanVerified: boolean; hasValidator: boolean; xpTotal: number | null; influenceFactor: number | null }> {
   try {
     const cleanUserId = userId.replace("@", "").replace("<", "").replace(">", "");
     const response = await fetch(`https://api.ethos.network/api/v2/users/by/discord`, {
@@ -981,7 +981,7 @@ async function getUserVerificationStatus(userId: string): Promise<{ isHumanVerif
       console.log(`getUserVerificationStatus failed for ${userId}: ${response.status}`);
       // Fall back to legacy validator check
       const hasValidator = await checkUserOwnsValidator(userId);
-      return { isHumanVerified: false, hasValidator };
+      return { isHumanVerified: false, hasValidator, xpTotal: null, influenceFactor: null };
     }
 
     const data = await response.json();
@@ -996,19 +996,21 @@ async function getUserVerificationStatus(userId: string): Promise<{ isHumanVerif
         if (uid === cleanUserId) {
           const isHumanVerified = userData.humanVerificationStatus === "VERIFIED";
           const hasValidator = (userData.validatorNftCount || 0) > 0;
-          console.log(`getUserVerificationStatus(${userId}): humanVerified=${isHumanVerified}, validator=${hasValidator}`);
-          return { isHumanVerified, hasValidator };
+          const xpTotal = userData.xpTotal ?? null;
+          const influenceFactor = userData.influenceFactor ?? null;
+          console.log(`getUserVerificationStatus(${userId}): humanVerified=${isHumanVerified}, validator=${hasValidator}, xp=${xpTotal}, influence=${influenceFactor}`);
+          return { isHumanVerified, hasValidator, xpTotal, influenceFactor };
         }
       }
     }
 
     // User not found in response — fall back to legacy validator check
     const hasValidator = await checkUserOwnsValidator(userId);
-    return { isHumanVerified: false, hasValidator };
+    return { isHumanVerified: false, hasValidator, xpTotal: null, influenceFactor: null };
   } catch (error) {
     console.error(`Error in getUserVerificationStatus(${userId}):`, error);
     const hasValidator = await checkUserOwnsValidator(userId);
-    return { isHumanVerified: false, hasValidator };
+    return { isHumanVerified: false, hasValidator, xpTotal: null, influenceFactor: null };
   }
 }
 
@@ -1662,12 +1664,17 @@ async function fetchEthosProfileByDiscord(
           authorName: (topReviewItem?.author?.name ?? "Unknown"),
         }
         : null,
-      // Verification status (fetched inline to avoid extra API call)
+      // Verification status, XP, and influence (fetched inline from v2 API)
       ...(await (async () => {
         try {
           const status = await getUserVerificationStatus(cleanUserId);
-          return { isHumanVerified: status.isHumanVerified, hasValidator: status.hasValidator };
-        } catch { return { isHumanVerified: false, hasValidator: false }; }
+          return {
+            isHumanVerified: status.isHumanVerified,
+            hasValidator: status.hasValidator,
+            xpTotal: status.xpTotal,
+            ...(status.influenceFactor != null ? { influenceFactor: status.influenceFactor } : {}),
+          };
+        } catch { return { isHumanVerified: false, hasValidator: false, xpTotal: null }; }
       })()),
     };
   } catch (error) {
@@ -1712,7 +1719,7 @@ async function fetchEthosProfileByTwitter(handle: string) {
     const userkey = `service:x.com:${twitterId}`;
 
     // Fetch profile score and user statistics using the new API endpoint
-    const [profileResponse, userStatsResponse, topReviewResponse] =
+    const [profileResponse, userStatsResponse, topReviewResponse, v2UserResponse] =
       await Promise.all([
         fetch(`https://api.ethos.network/api/v1/score/${userkey}`, {
           headers: {
@@ -1739,6 +1746,11 @@ async function fetchEthosProfileByTwitter(handle: string) {
             offset: 0,
           }),
         }),
+        fetch(`https://api.ethos.network/api/v2/user/by/x/${encodeURIComponent(formattedHandle)}`, {
+          headers: {
+            "X-Ethos-Client": "ethos-discord",
+          },
+        }),
       ]);
 
     if (!profileResponse.ok) {
@@ -1760,6 +1772,15 @@ async function fetchEthosProfileByTwitter(handle: string) {
 
     const userStats = await userStatsResponse.json();
     console.log("User Stats API Response:", JSON.stringify(userStats, null, 2));
+
+    // Extract XP from v2 user endpoint
+    let xpTotal: number | null = null;
+    try {
+      if (v2UserResponse.ok) {
+        const v2Data = await v2UserResponse.json();
+        xpTotal = v2Data.xpTotal ?? null;
+      }
+    } catch { /* ignore v2 user fetch errors */ }
 
     const topReviewResponseData = await topReviewResponse.json();
     console.log(
@@ -1810,6 +1831,7 @@ async function fetchEthosProfileByTwitter(handle: string) {
       name: twitterData.data.name,
       service: "twitter",
       influenceFactor,
+      xpTotal,
       elements: {
         accountAge: elements["Twitter Account Age"]?.raw,
         ethAge: elements["Ethereum Address Age"]?.raw,
@@ -2030,8 +2052,15 @@ async function handleInteraction(
                 },
                 ...(profile.influenceFactor != null
                   ? [{
-                    name: "Influence",
+                    name: "Influence factor",
                     value: String(profile.influenceFactor),
+                    inline: true,
+                  }]
+                  : []),
+                ...(profile.xpTotal != null
+                  ? [{
+                    name: "Contributor XP",
+                    value: Number(profile.xpTotal).toLocaleString(),
                     inline: true,
                   }]
                   : []),
@@ -2127,8 +2156,15 @@ async function handleInteraction(
                 },
                 ...(profile.influenceFactor != null
                   ? [{
-                    name: "Influence",
+                    name: "Influence factor",
                     value: String(profile.influenceFactor),
+                    inline: true,
+                  }]
+                  : []),
+                ...(profile.xpTotal != null
+                  ? [{
+                    name: "Contributor XP",
+                    value: Number(profile.xpTotal).toLocaleString(),
                     inline: true,
                   }]
                   : []),
@@ -2988,8 +3024,15 @@ async function handleMentionEthos(
           },
           ...(profile.influenceFactor != null
             ? [{
-              name: "Influence",
+              name: "Influence factor",
               value: String(profile.influenceFactor),
+              inline: true,
+            }]
+            : []),
+          ...(profile.xpTotal != null
+            ? [{
+              name: "Contributor XP",
+              value: Number(profile.xpTotal).toLocaleString(),
               inline: true,
             }]
             : []),
