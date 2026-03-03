@@ -181,6 +181,9 @@ const LEGACY_ROLE_IDS: Record<string, string> = {
 // Global initialization state
 let roleInitPromise: Promise<void> | null = null;
 
+// Emoji registry: name → "<:name:id>" format string (populated during initializeRoles)
+const emojiRegistry = new Map<string, string>();
+
 // Initialize all score roles in the Discord guild (create if missing, store in KV)
 async function initializeRoles(guildId: string): Promise<void> {
   console.log("[ROLE-INIT] === Starting role initialization ===");
@@ -373,6 +376,24 @@ async function initializeRoles(guildId: string): Promise<void> {
   }
   if (ETHOS_HUMAN_VALIDATOR_META_ROLE_ID) {
     console.log(`[ROLE-INIT] Human Validator meta role: ${ETHOS_HUMAN_VALIDATOR_META_ROLE_ID}`);
+  }
+
+  // Fetch guild emojis for status badges
+  try {
+    const emojisUrl = `https://discord.com/api/v10/guilds/${guildId}/emojis`;
+    const emojisResponse = await discordApiCall(emojisUrl, { method: "GET" });
+    if (emojisResponse.ok) {
+      const emojis: { id: string; name: string }[] = await emojisResponse.json();
+      const badgeNames = ["human_verified_badge", "validator", "verified_validator"];
+      for (const emoji of emojis) {
+        if (badgeNames.includes(emoji.name)) {
+          emojiRegistry.set(emoji.name, `<:${emoji.name}:${emoji.id}>`);
+        }
+      }
+      console.log(`[ROLE-INIT] Found ${emojiRegistry.size} badge emojis: ${[...emojiRegistry.keys()].join(", ")}`);
+    }
+  } catch (e) {
+    console.warn(`[ROLE-INIT] Failed to fetch guild emojis:`, e);
   }
 
   const elapsed = Date.now() - startTime;
@@ -1543,7 +1564,7 @@ async function fetchEthosProfileByDiscord(
             userkey,
             filter: ["review"],
             excludeHistorical: true,
-            orderBy: { field: "timestamp", direction: "desc" },
+            orderBy: { field: "votes", direction: "desc" },
             limit: 1,
             offset: 0,
           }),
@@ -1637,6 +1658,13 @@ async function fetchEthosProfileByDiscord(
           authorName: (topReviewItem?.author?.name ?? "Unknown"),
         }
         : null,
+      // Verification status (fetched inline to avoid extra API call)
+      ...(await (async () => {
+        try {
+          const status = await getUserVerificationStatus(cleanUserId);
+          return { isHumanVerified: status.isHumanVerified, hasValidator: status.hasValidator };
+        } catch { return { isHumanVerified: false, hasValidator: false }; }
+      })()),
     };
   } catch (error) {
     console.error("Error fetching Ethos profile by Discord:", error);
@@ -1702,7 +1730,7 @@ async function fetchEthosProfileByTwitter(handle: string) {
             userkey,
             filter: ["review"],
             excludeHistorical: true,
-            orderBy: { field: "timestamp", direction: "desc" },
+            orderBy: { field: "votes", direction: "desc" },
             limit: 1,
             offset: 0,
           }),
@@ -1971,7 +1999,7 @@ async function handleInteraction(
             await sendPublicFollowUpEmbedMessage(interaction.id, interaction.token, {
               title,
               url: profileUrl,
-              description: `${displayName} is considered **${getScoreLabel(profile.score)}**.`,
+              description: `${displayName} is considered **${getScoreLabel(profile.score)}**.${getStatusBadges(profile)}`,
               color: getScoreColor(profile.score),
               thumbnail: {
                 url: avatarUrl || profile.avatar || "https://cdn.discordapp.com/embed/avatars/0.png",
@@ -2131,6 +2159,25 @@ async function handleInteraction(
         },
       };
   }
+}
+
+// Build status badges string for embed descriptions
+function getStatusBadges(profile: { isHumanVerified?: boolean; hasValidator?: boolean }): string {
+  const badges: string[] = [];
+  if (profile.isHumanVerified && profile.hasValidator) {
+    const emoji = emojiRegistry.get("verified_validator");
+    if (emoji) badges.push(emoji);
+  } else {
+    if (profile.isHumanVerified) {
+      const emoji = emojiRegistry.get("human_verified_badge");
+      if (emoji) badges.push(emoji);
+    }
+    if (profile.hasValidator) {
+      const emoji = emojiRegistry.get("validator");
+      if (emoji) badges.push(emoji);
+    }
+  }
+  return badges.length > 0 ? " " + badges.join(" ") : "";
 }
 
 function getScoreLabel(score: number): string {
@@ -2896,7 +2943,7 @@ async function handleMentionEthos(
       embeds.push({
         title: `Ethos profile for ${result.displayName}`,
         url: profileUrl,
-        description: `${result.displayName} is considered **${getScoreLabel(profile.score)}**.`,
+        description: `${result.displayName} is considered **${getScoreLabel(profile.score)}**.${getStatusBadges(profile)}`,
         color: getScoreColor(profile.score),
         thumbnail: {
           url: result.avatarUrl || profile.avatar || "https://cdn.discordapp.com/embed/avatars/0.png",
