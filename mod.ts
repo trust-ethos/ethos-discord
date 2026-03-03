@@ -122,6 +122,7 @@ const ROLE_TO_REMOVE_ON_VERIFY = "1410662938376802415"; // Legacy/temporary role
 // Standalone meta roles — assigned based on status for easy @mention
 let ETHOS_VALIDATOR_META_ROLE_ID: string | null = null;
 let ETHOS_HUMAN_VERIFIED_META_ROLE_ID: string | null = null;
+let ETHOS_HUMAN_VALIDATOR_META_ROLE_ID: string | null = null;
 
 // ===== DATA-DRIVEN ROLE CONFIGURATION =====
 
@@ -346,6 +347,34 @@ async function initializeRoles(guildId: string): Promise<void> {
     console.log(`[ROLE-INIT] Human Verified meta role: ${ETHOS_HUMAN_VERIFIED_META_ROLE_ID}`);
   }
 
+  // Initialize the standalone "Human Validator" meta role
+  const hvValidatorMetaName = "Human Validator";
+  const kvHvValidator = kv ? (await kv.get(["ethos_role_id", "_meta", "human_validator"])).value as string | null : null;
+  if (kvHvValidator && guildRoleIdsSet.has(kvHvValidator)) {
+    ETHOS_HUMAN_VALIDATOR_META_ROLE_ID = kvHvValidator;
+  } else if (guildRolesByName.has(hvValidatorMetaName)) {
+    ETHOS_HUMAN_VALIDATOR_META_ROLE_ID = guildRolesByName.get(hvValidatorMetaName)!;
+    if (kv) await kv.set(["ethos_role_id", "_meta", "human_validator"], ETHOS_HUMAN_VALIDATOR_META_ROLE_ID);
+  } else {
+    const createUrl = `https://discord.com/api/v10/guilds/${guildId}/roles`;
+    const createResponse = await discordApiCall(createUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: hvValidatorMetaName, color: 0x000000, hoist: false, mentionable: true }),
+    });
+    if (createResponse.ok) {
+      const newRole = await createResponse.json();
+      ETHOS_HUMAN_VALIDATOR_META_ROLE_ID = newRole.id;
+      if (kv) await kv.set(["ethos_role_id", "_meta", "human_validator"], newRole.id);
+      console.log(`[ROLE-INIT] Created "${hvValidatorMetaName}" meta role (${newRole.id})`);
+    } else {
+      console.error(`[ROLE-INIT] Failed to create "${hvValidatorMetaName}" meta role: ${createResponse.status}`);
+    }
+  }
+  if (ETHOS_HUMAN_VALIDATOR_META_ROLE_ID) {
+    console.log(`[ROLE-INIT] Human Validator meta role: ${ETHOS_HUMAN_VALIDATOR_META_ROLE_ID}`);
+  }
+
   const elapsed = Date.now() - startTime;
   console.log(`[ROLE-INIT] === Initialization complete: ${roleRegistry.size} roles registered, ${createdCount} created (${elapsed}ms) ===`);
 }
@@ -358,6 +387,7 @@ function getAllManagedRoleIds(): string[] {
   ids.add(ETHOS_VERIFIED_PROFILE_ROLE_ID);
   if (ETHOS_VALIDATOR_META_ROLE_ID) ids.add(ETHOS_VALIDATOR_META_ROLE_ID);
   if (ETHOS_HUMAN_VERIFIED_META_ROLE_ID) ids.add(ETHOS_HUMAN_VERIFIED_META_ROLE_ID);
+  if (ETHOS_HUMAN_VALIDATOR_META_ROLE_ID) ids.add(ETHOS_HUMAN_VALIDATOR_META_ROLE_ID);
   // All registry roles
   for (const id of roleRegistry.values()) ids.add(id);
   // All legacy role IDs (for migration cleanup)
@@ -3868,6 +3898,9 @@ function getExpectedRoles(
   if (isHumanVerified && ETHOS_HUMAN_VERIFIED_META_ROLE_ID) {
     expectedRoles.push(ETHOS_HUMAN_VERIFIED_META_ROLE_ID);
   }
+  if (hasValidator && isHumanVerified && ETHOS_HUMAN_VALIDATOR_META_ROLE_ID) {
+    expectedRoles.push(ETHOS_HUMAN_VALIDATOR_META_ROLE_ID);
+  }
 
   if (hasValidProfile) {
     // Determine the best variant for this user
@@ -4641,6 +4674,7 @@ function getRoleNameFromId(roleId: string): string {
   if (roleId === ETHOS_VERIFIED_PROFILE_ROLE_ID) return "Verified Profile";
   if (ETHOS_VALIDATOR_META_ROLE_ID && roleId === ETHOS_VALIDATOR_META_ROLE_ID) return "Validator";
   if (ETHOS_HUMAN_VERIFIED_META_ROLE_ID && roleId === ETHOS_HUMAN_VERIFIED_META_ROLE_ID) return "Human Verified";
+  if (ETHOS_HUMAN_VALIDATOR_META_ROLE_ID && roleId === ETHOS_HUMAN_VALIDATOR_META_ROLE_ID) return "Human Validator";
 
   // Reverse lookup from roleRegistry
   for (const [key, id] of roleRegistry) {
