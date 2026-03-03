@@ -384,7 +384,7 @@ async function initializeRoles(guildId: string): Promise<void> {
     const emojisResponse = await discordApiCall(emojisUrl, { method: "GET" });
     if (emojisResponse.ok) {
       const emojis: { id: string; name: string }[] = await emojisResponse.json();
-      const badgeNames = ["human_verified_badge", "validator", "verified_validator"];
+      const badgeNames = ["human_verified_badge", "human_verified", "validator", "verified_validator"];
       for (const emoji of emojis) {
         if (badgeNames.includes(emoji.name)) {
           emojiRegistry.set(emoji.name, `<:${emoji.name}:${emoji.id}>`);
@@ -2223,15 +2223,15 @@ async function handleInteraction(
 function getStatusBadges(profile: { isHumanVerified?: boolean; hasValidator?: boolean }): string {
   if (profile.isHumanVerified && profile.hasValidator) {
     const emoji = emojiRegistry.get("verified_validator");
-    return emoji ? `\nHuman Validator ${emoji}` : "\nHuman Validator";
+    return emoji ? `\nIs a Human Validator ${emoji}` : "\nIs a Human Validator";
   }
   if (profile.isHumanVerified) {
-    const emoji = emojiRegistry.get("human_verified_badge");
-    return emoji ? `\nHuman ${emoji}` : "\nHuman";
+    const emoji = emojiRegistry.get("human_verified") || emojiRegistry.get("human_verified_badge");
+    return emoji ? `\nIs human ${emoji}` : "\nIs human";
   }
   if (profile.hasValidator) {
     const emoji = emojiRegistry.get("validator");
-    return emoji ? `\nValidator ${emoji}` : "\nValidator";
+    return emoji ? `\nOwns a validator ${emoji}` : "\nOwns a validator";
   }
   return "";
 }
