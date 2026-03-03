@@ -2219,23 +2219,21 @@ async function handleInteraction(
   }
 }
 
-// Build status badges string for embed descriptions
+// Build status badges string for embed descriptions (label + icon on a new line)
 function getStatusBadges(profile: { isHumanVerified?: boolean; hasValidator?: boolean }): string {
-  const badges: string[] = [];
   if (profile.isHumanVerified && profile.hasValidator) {
     const emoji = emojiRegistry.get("verified_validator");
-    if (emoji) badges.push(emoji);
-  } else {
-    if (profile.isHumanVerified) {
-      const emoji = emojiRegistry.get("human_verified_badge");
-      if (emoji) badges.push(emoji);
-    }
-    if (profile.hasValidator) {
-      const emoji = emojiRegistry.get("validator");
-      if (emoji) badges.push(emoji);
-    }
+    return emoji ? `\nHuman Validator ${emoji}` : "\nHuman Validator";
   }
-  return badges.length > 0 ? " " + badges.join(" ") : "";
+  if (profile.isHumanVerified) {
+    const emoji = emojiRegistry.get("human_verified_badge");
+    return emoji ? `\nHuman ${emoji}` : "\nHuman";
+  }
+  if (profile.hasValidator) {
+    const emoji = emojiRegistry.get("validator");
+    return emoji ? `\nValidator ${emoji}` : "\nValidator";
+  }
+  return "";
 }
 
 function getScoreLabel(score: number): string {
