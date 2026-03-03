@@ -2341,6 +2341,25 @@ function handleGatewayMessageCreate(message: any) {
     }
   }
 
+  // Check for "verify @target" — sync another user's roles
+  if (ethosTargetUsers.length > 0 && question.replace(/<@!?\d+>/g, "").trim().toLowerCase() === "verify") {
+    const guildId = message.guild_id;
+    if (!guildId) {
+      sendGatewayChannelMessage(
+        message.channel_id,
+        "This command can only be used in a server.",
+        message.id,
+      ).catch((error) => console.error("Error sending verify-target guild error:", error));
+      return;
+    }
+
+    const targets = ethosTargetUsers.slice(0, 5);
+    handleMentionVerifyTargets(message.channel_id, message.id, guildId, targets).catch((error) => {
+      console.error("Unexpected error in handleMentionVerifyTargets:", error);
+    });
+    return;
+  }
+
   if (ethosTargetUsers.length > 0) {
     const cappedTargets = ethosTargetUsers.slice(0, 10); // Discord 10-embed limit
     handleMentionEthos(message.channel_id, message.id, cappedTargets).catch((error) => {
@@ -2668,6 +2687,62 @@ async function handleMentionVerify(channelId: string, messageId: string, guildId
   } catch (error) {
     console.error("Error in handleMentionVerify:", error);
     const errorMsg = "❌ An error occurred while verifying your profile. Please try again later.";
+    if (placeholderId) {
+      await editGatewayChannelMessage(channelId, placeholderId, { content: errorMsg });
+    } else {
+      await sendGatewayChannelMessage(channelId, errorMsg, messageId);
+    }
+  }
+}
+
+async function handleMentionVerifyTargets(
+  channelId: string,
+  messageId: string,
+  guildId: string,
+  targets: Array<{ id: string; username: string; global_name?: string }>,
+): Promise<void> {
+  const plural = targets.length > 1;
+  const placeholderId = await sendGatewayChannelMessage(
+    channelId,
+    `🔍 Verifying ${plural ? `${targets.length} users` : `<@${targets[0].id}>`}...`,
+    messageId,
+  );
+
+  try {
+    if (roleInitPromise) await roleInitPromise;
+
+    const results: string[] = [];
+
+    for (const target of targets) {
+      await clearUserCache(target.id);
+      const verifyResult = await verifyUserRoles(guildId, target.id);
+      const displayName = target.global_name || target.username;
+
+      if (!verifyResult.success || !verifyResult.profile || "error" in verifyResult.profile) {
+        results.push(`**${displayName}**: No Ethos profile found`);
+        continue;
+      }
+
+      const profile = verifyResult.profile;
+      const scoreName = getRoleNameForScore(profile.score);
+
+      if (verifyResult.changes.length > 0) {
+        results.push(`**${displayName}**: ${verifyResult.changes.join(", ")} (${scoreName} — ${profile.score})`);
+      } else {
+        results.push(`**${displayName}**: Already up to date (${scoreName} — ${profile.score})`);
+      }
+    }
+
+    const resultContent = `✅ Verification complete:\n${results.join("\n")}`;
+
+    if (placeholderId) {
+      await editGatewayChannelMessage(channelId, placeholderId, { content: resultContent });
+    } else {
+      await sendGatewayChannelMessage(channelId, resultContent, messageId);
+    }
+  } catch (error) {
+    console.error("Error in handleMentionVerifyTargets:", error);
+    const errorMsg = "❌ An error occurred while verifying. Please try again later.";
     if (placeholderId) {
       await editGatewayChannelMessage(channelId, placeholderId, { content: errorMsg });
     } else {
