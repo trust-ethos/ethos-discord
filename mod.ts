@@ -1628,6 +1628,9 @@ async function fetchEthosProfileByDiscord(
     const mutualVouches = userStats.ok
       ? userStats.data?.vouches?.count?.mutual || 0
       : 0;
+    const influenceFactor = userStats.ok
+      ? userStats.data?.influenceFactor ?? null
+      : null;
 
     const scoreData = profileData.data;
     const elements = scoreData.elements || {};
@@ -1641,6 +1644,7 @@ async function fetchEthosProfileByDiscord(
       name: scoreData.name || `Discord User ${cleanUserId}`,
       service: "discord",
       primaryAddress,
+      influenceFactor,
       elements: {
         accountAge: elements["Discord Account Age"]?.raw,
         ethAge: elements["Ethereum Address Age"]?.raw,
@@ -1791,6 +1795,9 @@ async function fetchEthosProfileByTwitter(handle: string) {
     const mutualVouches = userStats.ok
       ? userStats.data?.vouches?.count?.mutual || 0
       : 0;
+    const influenceFactor = userStats.ok
+      ? userStats.data?.influenceFactor ?? null
+      : null;
 
     const scoreData = profileData.data;
     const elements = scoreData.elements || {};
@@ -1802,6 +1809,7 @@ async function fetchEthosProfileByTwitter(handle: string) {
       avatar: twitterData.data.avatar,
       name: twitterData.data.name,
       service: "twitter",
+      influenceFactor,
       elements: {
         accountAge: elements["Twitter Account Age"]?.raw,
         ethAge: elements["Ethereum Address Age"]?.raw,
@@ -2020,6 +2028,13 @@ async function handleInteraction(
                   value: `${profile.elements?.vouchBalance}e (${profile.elements?.vouchCount} vouchers)`,
                   inline: true,
                 },
+                ...(profile.influenceFactor != null
+                  ? [{
+                    name: "Influence",
+                    value: String(profile.influenceFactor),
+                    inline: true,
+                  }]
+                  : []),
                 ...(profile.topReview
                   ? [{
                     name: "Most upvoted review",
@@ -2110,6 +2125,13 @@ async function handleInteraction(
                     `${profile.elements?.vouchBalance}e (${profile.elements?.vouchCount} vouchers)`,
                   inline: true,
                 },
+                ...(profile.influenceFactor != null
+                  ? [{
+                    name: "Influence",
+                    value: String(profile.influenceFactor),
+                    inline: true,
+                  }]
+                  : []),
                 ...(profile.topReview
                   ? [{
                     name: "Most upvoted review",
@@ -2964,6 +2986,13 @@ async function handleMentionEthos(
             value: `${profile.elements?.vouchBalance}e (${profile.elements?.vouchCount} vouchers)`,
             inline: true,
           },
+          ...(profile.influenceFactor != null
+            ? [{
+              name: "Influence",
+              value: String(profile.influenceFactor),
+              inline: true,
+            }]
+            : []),
           ...(profile.topReview
             ? [{
               name: "Most upvoted review",
