@@ -5384,12 +5384,20 @@ async function syncUserRolesBatch(
       console.log(`[BATCH-SYNC] User ${userId}: hasProfile=${profile.hasProfile}, score=${profile.score}, humanVerified=${profile.humanVerificationStatus}, validators=${profile.validatorNftCount}`);
     }
 
+    // Sort users by score descending — highest scores get processed first
+    const sortedUsers = [...usersToSync].sort((a, b) => {
+      const scoreA = allProfileData.get(a)?.score ?? -1;
+      const scoreB = allProfileData.get(b)?.score ?? -1;
+      return scoreB - scoreA;
+    });
+    console.log(`[BATCH-SYNC] Processing users sorted by score (highest first)`);
+
     // Now process role changes for each user
     const changes = new Map<string, string[]>();
     const errors: string[] = [];
     let processedCount = 0;
 
-    for (const userId of usersToSync) {
+    for (const userId of sortedUsers) {
       try {
         processedCount++;
         const profile = allProfileData.get(userId);
