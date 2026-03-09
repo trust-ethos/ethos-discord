@@ -5027,6 +5027,7 @@ async function performValidatorVerification(guildId: string): Promise<void> {
     let errorCount = 0;
     let demotedCount = 0;
     let totalChanges = 0;
+    const purgedUserIds: string[] = [];
 
     // Process users in batches
     const BATCH_SIZE = VALIDATOR_CHECK_CONFIG.BATCH_SIZE;
@@ -5067,6 +5068,7 @@ async function performValidatorVerification(guildId: string): Promise<void> {
           if (result.demoted) {
             demotedCount++;
             validatorCheckStatus.demotedUsers++;
+            purgedUserIds.push(userId);
           }
           totalChanges += result.changes.length;
 
@@ -5096,6 +5098,22 @@ async function performValidatorVerification(guildId: string): Promise<void> {
     console.log(`[VALIDATOR-CHECK] Demoted: ${demotedCount} users`);
     console.log(`[VALIDATOR-CHECK] Errors: ${errorCount} users`);
     console.log(`[VALIDATOR-CHECK] Total changes: ${totalChanges}`);
+
+    // Post purge summary to the validator channel
+    const VALIDATOR_PURGE_CHANNEL_ID = "1377481679567851562";
+    try {
+      let message: string;
+      if (purgedUserIds.length === 0) {
+        message = `Purge complete. Checked ${successCount} users — no one was removed.`;
+      } else {
+        const purgedMentions = purgedUserIds.map(id => `<@${id}>`).join(", ");
+        message = `Purge complete. Checked ${successCount} users — ${purgedUserIds.length} removed:\n${purgedMentions}`;
+      }
+      await sendGatewayChannelMessage(VALIDATOR_PURGE_CHANNEL_ID, message);
+      console.log(`[VALIDATOR-CHECK] Posted purge summary to channel ${VALIDATOR_PURGE_CHANNEL_ID}`);
+    } catch (msgError) {
+      console.error("[VALIDATOR-CHECK] Failed to post purge summary:", msgError);
+    }
 
   } catch (error) {
     console.error("[VALIDATOR-CHECK] Error during validator verification:", error);
@@ -5146,19 +5164,27 @@ export async function triggerValidatorVerification(guildId?: string): Promise<vo
   await performValidatorVerification(targetGuildId);
 }
 
-// ===== AUTOMATED CRON-BASED OPERATIONS =====
+// ===== DAILY VALIDATOR PURGE =====
 
-// Note: Automated cron jobs are handled by Railway's cron service
-// The cron jobs trigger HTTP endpoints on this service:
-// - Validator verification: POST /trigger-validator-check (every 2 hours)
-// - Batch role sync: POST /trigger-batch-sync (every 6 hours)
-//
-// Railway cron configuration is in railway.toml file
-console.log("ℹ️ Automated cron jobs are configured via Railway cron service");
-console.log("ℹ️ - Validator/HV verification: every 2 hours via POST /trigger-validator-check");
-console.log("ℹ️ - Batch role sync: every 6 hours via POST /trigger-batch-sync");
+// Run validator verification once every 24 hours
+const DAILY_VALIDATOR_CHECK_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
+setTimeout(() => {
+  // Initial run 5 minutes after startup to let everything initialize
+  triggerValidatorVerification().catch(error => {
+    console.error("[DAILY-PURGE] Error in initial validator verification:", error);
+  });
+
+  // Then repeat every 24 hours
+  setInterval(() => {
+    triggerValidatorVerification().catch(error => {
+      console.error("[DAILY-PURGE] Error in scheduled validator verification:", error);
+    });
+  }, DAILY_VALIDATOR_CHECK_INTERVAL);
+}, 5 * 60 * 1000); // 5 minute startup delay
+
+console.log("ℹ️ Daily validator purge scheduled (first run 5 min after startup, then every 24h)");
+console.log("ℹ️ - Manual trigger: POST /trigger-validator-check");
 console.log("ℹ️ - Manual role init: POST /initialize-roles");
-console.log("ℹ️ See railway.toml for cron configuration");
 
 // ===== BATCH API FUNCTIONS =====
 
