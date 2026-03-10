@@ -3741,6 +3741,19 @@ serve(async (req) => {
     }
   }
 
+  // Handle last validator check result endpoint
+  if (url.pathname === "/last-validator-check" && req.method === "GET") {
+    return new Response(
+      JSON.stringify({
+        success: true,
+        lastRun: lastValidatorCheckResult || "No validator check has completed since this instance started",
+      }),
+      {
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  }
+
   // Refresh help center articles cache
   if (url.pathname === "/refresh-articles" && req.method === "POST") {
     try {
@@ -4837,6 +4850,17 @@ let validatorCheckStatus = {
   checkId: null as string | null,
 };
 
+// Last completed validator check result (persists across runs in memory)
+let lastValidatorCheckResult: {
+  completedAt: string;
+  durationSeconds: number;
+  processedUsers: number;
+  demotedUsers: number;
+  purgedUserIds: string[];
+  errors: number;
+  status: string;
+} | null = null;
+
 // Function to get all validator role IDs
 // Get all non-base role IDs (validator, human, human_validator) from registry + legacy
 function getAllSpecialRoles(): string[] {
@@ -5098,6 +5122,17 @@ async function performValidatorVerification(guildId: string): Promise<void> {
     console.log(`[VALIDATOR-CHECK] Demoted: ${demotedCount} users`);
     console.log(`[VALIDATOR-CHECK] Errors: ${errorCount} users`);
     console.log(`[VALIDATOR-CHECK] Total changes: ${totalChanges}`);
+
+    // Save last run result
+    lastValidatorCheckResult = {
+      completedAt: new Date().toISOString(),
+      durationSeconds: parseFloat(duration),
+      processedUsers: successCount,
+      demotedUsers: demotedCount,
+      purgedUserIds: [...purgedUserIds],
+      errors: errorCount,
+      status,
+    };
 
     // Post purge summary to the validator channel
     const VALIDATOR_PURGE_CHANNEL_ID = "1377481679567851562";
