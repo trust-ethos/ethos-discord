@@ -5139,10 +5139,12 @@ async function performValidatorVerification(guildId: string): Promise<void> {
     try {
       let message: string;
       if (purgedUserIds.length === 0) {
-        message = `Purge complete. Checked ${successCount} users — no one was removed.`;
+        message = `Good news — no one sold their validator today. All ${successCount} holders checked out. Purge complete.`;
       } else {
         const purgedMentions = purgedUserIds.map(id => `<@${id}>`).join(", ");
-        message = `Purge complete. Checked ${successCount} users — ${purgedUserIds.length} removed:\n${purgedMentions}`;
+        message = purgedUserIds.length === 1
+          ? `Looks like someone parted ways with their validator. ${purgedMentions} has been removed. ${successCount} holders checked, purge complete.`
+          : `${purgedUserIds.length} people sold their validators. ${purgedMentions} have been removed. ${successCount} holders checked, purge complete.`;
       }
       await sendGatewayChannelMessage(VALIDATOR_PURGE_CHANNEL_ID, message);
       console.log(`[VALIDATOR-CHECK] Posted purge summary to channel ${VALIDATOR_PURGE_CHANNEL_ID}`);
